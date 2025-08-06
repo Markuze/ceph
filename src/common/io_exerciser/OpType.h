@@ -17,12 +17,15 @@ enum class OpType {
   Barrier,               // Barrier - all prior I/Os must complete
   Create,                // Create object and pattern with data
   Remove,                // Remove object
+  Consistency,           // Check consistency of an object
   Read,                  // Read
   Read2,                 // Two reads in a single op
   Read3,                 // Three reads in a single op
   Write,                 // Write
   Write2,                // Two writes in a single op
   Write3,                // Three writes in a single op
+  Append,                // Append
+  Truncate,              // Truncate
   FailedWrite,           // A write which should fail
   FailedWrite2,          // Two writes in one op which should fail
   FailedWrite3,          // Three writes in one op which should fail
@@ -57,6 +60,8 @@ struct fmt::formatter<ceph::io_exerciser::OpType> {
         return fmt::format_to(ctx.out(), "Create");
       case ceph::io_exerciser::OpType::Remove:
         return fmt::format_to(ctx.out(), "Remove");
+      case ceph::io_exerciser::OpType::Consistency:
+        return fmt::format_to(ctx.out(), "Consistency");
       case ceph::io_exerciser::OpType::Read:
         return fmt::format_to(ctx.out(), "Read");
       case ceph::io_exerciser::OpType::Read2:
@@ -69,6 +74,10 @@ struct fmt::formatter<ceph::io_exerciser::OpType> {
         return fmt::format_to(ctx.out(), "Write2");
       case ceph::io_exerciser::OpType::Write3:
         return fmt::format_to(ctx.out(), "Write3");
+      case ceph::io_exerciser::OpType::Append:
+        return fmt::format_to(ctx.out(), "Append");
+      case ceph::io_exerciser::OpType::Truncate:
+        return fmt::format_to(ctx.out(), "Truncate");
       case ceph::io_exerciser::OpType::FailedWrite:
         return fmt::format_to(ctx.out(), "FailedWrite");
       case ceph::io_exerciser::OpType::FailedWrite2:

@@ -61,6 +61,13 @@ class RemoveOp : public TestOp<OpType::Remove> {
   std::string to_string(uint64_t block_size) const override;
 };
 
+class ConsistencyOp : public TestOp<OpType::Consistency> {
+  public:
+   ConsistencyOp();
+   static std::unique_ptr<ConsistencyOp> generate();
+   std::string to_string(uint64_t block_size) const override;
+ };
+
 template <OpType opType, int numIOs>
 class ReadWriteOp : public TestOp<opType> {
  public:
@@ -123,6 +130,20 @@ class TripleWriteOp : public ReadWriteOp<OpType::Write3, 3> {
   static std::unique_ptr<TripleWriteOp> generate(
       uint64_t offset1, uint64_t length1, uint64_t offset2, uint64_t length2,
       uint64_t offset3, uint64_t length3);
+};
+
+class SingleAppendOp : public ReadWriteOp<OpType::Append, 1> {
+ public:
+  SingleAppendOp(uint64_t length);
+  static std::unique_ptr<SingleAppendOp> generate(uint64_t length);
+};
+
+class TruncateOp : public TestOp<OpType::Truncate> {
+ public:
+  TruncateOp(uint64_t size);
+  static std::unique_ptr<TruncateOp> generate(uint64_t size);
+  std::string to_string(uint64_t block_size) const override;
+  uint64_t size;
 };
 
 class SingleFailedWriteOp : public ReadWriteOp<OpType::FailedWrite, 1> {

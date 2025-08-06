@@ -15,22 +15,25 @@
 #ifndef CEPH_MONMAP_H
 #define CEPH_MONMAP_H
 
-#ifdef WITH_SEASTAR
+#ifdef WITH_CRIMSON
 #include <seastar/core/future.hh>
 #endif
 
 #include "common/config_fwd.h"
 #include "common/ceph_releases.h"
+#include "include/uuid.h" // for uuid_d
 
-#include "include/err.h"
-#include "include/types.h"
+#include "mon/mon_types.h" // for mon_feature_t
 
-#include "mon/mon_types.h"
-#include "msg/Message.h"
+#include <iosfwd>
+#include <map>
+#include <set>
+#include <string>
+#include <vector>
 
 class health_check_map_t;
 
-#ifdef WITH_SEASTAR
+#ifdef WITH_CRIMSON
 namespace crimson::common {
   class ConfigProxy;
 }
@@ -89,11 +92,6 @@ struct mon_info_t {
   static void generate_test_instances(std::list<mon_info_t*>& ls);
 };
 WRITE_CLASS_ENCODER_FEATURES(mon_info_t)
-
-inline std::ostream& operator<<(std::ostream& out, const mon_info_t& mon) {
-  mon.print(out);
-  return out;
-}
 
 class MonMap {
  public:
@@ -456,7 +454,7 @@ public:
    * @param cct context (and associated config)
    * @param errout std::ostream to send error messages too
    */
-#ifdef WITH_SEASTAR
+#ifdef WITH_CRIMSON
   seastar::future<> build_initial(const crimson::common::ConfigProxy& conf, bool for_mkfs);
 #else
   int build_initial(CephContext *cct, bool for_mkfs, std::ostream& errout);
@@ -525,7 +523,7 @@ protected:
 		      bool for_mkfs,
 		      std::string_view prefix);
   int init_with_config_file(const ConfigProxy& conf, std::ostream& errout);
-#if WITH_SEASTAR
+#if WITH_CRIMSON
   seastar::future<> read_monmap(const std::string& monmap);
   /// try to build monmap with different settings, like
   /// mon_host, mon* sections, and mon_dns_srv_name

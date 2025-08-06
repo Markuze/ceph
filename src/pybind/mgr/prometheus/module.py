@@ -9,7 +9,7 @@ import threading
 import time
 import enum
 from collections import namedtuple
-import tempfile
+from tempfile import NamedTemporaryFile
 
 from mgr_module import CLIReadCommand, MgrModule, MgrStandbyModule, PG_STATES, Option, ServiceInfoT, HandleCommandResult, CLIWriteCommand
 from mgr_util import get_default_addr, profile_method, build_url
@@ -17,7 +17,6 @@ from orchestrator import OrchestratorClientMixin, raise_if_exception, Orchestrat
 from rbd import RBD
 
 from typing import DefaultDict, Optional, Dict, Any, Set, cast, Tuple, Union, List, Callable, IO
-
 LabelValues = Tuple[str, ...]
 Number = Union[int, float]
 MetricValue = Dict[LabelValues, Number]
@@ -94,7 +93,7 @@ OSD_STATUS = ['weight', 'up', 'in']
 
 OSD_STATS = ['apply_latency_ms', 'commit_latency_ms']
 
-POOL_METADATA = ('pool_id', 'name', 'type', 'description', 'compression_mode')
+POOL_METADATA = ('pool_id', 'name', 'type', 'description', 'compression_mode', 'application')
 
 RGW_METADATA = ('ceph_daemon', 'hostname', 'ceph_version', 'instance_id')
 
@@ -105,6 +104,9 @@ DISK_OCCUPATION = ('ceph_daemon', 'device', 'db_device',
                    'wal_device', 'instance', 'devices', 'device_ids')
 
 NUM_OBJECTS = ['degraded', 'misplaced', 'unfound']
+
+SMB_METADATA = ('smb_version', 'volume',
+                'subvolume_group', 'subvolume', 'netbiosname', 'share')
 
 alert_metric = namedtuple('alert_metric', 'name description')
 HEALTH_CHECKS = [
@@ -125,6 +127,12 @@ class Format(enum.Enum):
     json = 'json'
     json_pretty = 'json-pretty'
     yaml = 'yaml'
+
+
+class StorageType(enum.Enum):
+    rbd = "Block"
+    cephfs = "Filesystem"
+    rgw = "Object"
 
 
 class HealthCheckEvent:
@@ -763,6 +771,13 @@ class Module(MgrModule, OrchestratorClientMixin):
             ('type', 'ceph_daemon',)
         )
 
+        metrics['smb_metadata'] = Metric(
+            'untyped',
+            'smb_metadata',
+            'SMB Metadata',
+            SMB_METADATA
+        )
+
         for flag in OSD_FLAGS:
             path = 'osd_flag_{}'.format(flag)
             metrics[path] = Metric(
@@ -1267,13 +1282,20 @@ class Module(MgrModule, OrchestratorClientMixin):
             if 'options' in pool:
                 compression_mode = pool['options'].get('compression_mode', 'none')
 
+            application_metadata = pool.get('application_metadata', {})
+            application_metadata_str = ', '.join(StorageType[k].value
+                                                 if k in StorageType.__members__ else str(k)
+                                                 for k in application_metadata
+                                                 )
             self.metrics['pool_metadata'].set(
                 1, (
                     pool['pool'],
                     pool['pool_name'],
                     pool_type,
                     pool_description,
-                    compression_mode)
+                    compression_mode,
+                    application_metadata_str,
+                ),
             )
 
         # Populate other servers metadata
@@ -1688,6 +1710,68 @@ class Module(MgrModule, OrchestratorClientMixin):
                     self.metrics[path].set(value, labels)
         self.add_fixed_name_metrics()
 
+    @profile_method()
+    def get_smb_metadata(self) -> None:
+        try:
+            mgr_map = self.get('mgr_map')
+            available_modules = [m['name'] for m in mgr_map['available_modules']]
+            if 'smb' not in available_modules:
+                self.log.debug("SMB module is not available, skipping SMB metadata collection")
+                return
+
+            if not self.available()[0]:
+                self.log.debug("Orchestrator not available")
+                return
+
+            smb_version = ""
+
+            try:
+                daemons = raise_if_exception(self.list_daemons(daemon_type='smb'))
+                if daemons:
+                    smb_version = str(daemons[0].version)
+            except Exception as e:
+                self.log.error(f"Failed to get SMB daemons: {str(e)}")
+                return
+
+            ret, out, err = self.mon_command({
+                'prefix': 'smb show',
+                'format': 'json'
+            })
+            if ret != 0:
+                self.log.error(f"Failed to get SMB info: {err}")
+                return
+
+            try:
+                smb_data = json.loads(out)
+
+                for resource in smb_data.get('resources', []):
+                    if resource.get('resource_type') == 'ceph.smb.share':
+                        self.log.info("Processing SMB share resource")
+                        cluster_id = resource.get('cluster_id')
+                        if not cluster_id:
+                            self.log.debug("Skipping share with missing cluster_id")
+                            continue
+
+                        share_id = resource.get('share_id', '')
+                        cephfs = resource.get('cephfs', {})
+                        cephfs_volume = cephfs.get('volume', '')
+                        cephfs_subvolumegroup = cephfs.get('subvolumegroup', '_nogroup')
+                        cephfs_subvolume = cephfs.get('subvolume', '')
+                        self.metrics['smb_metadata'].set(1, (
+                            smb_version,
+                            cephfs_volume,
+                            cephfs_subvolumegroup,
+                            cephfs_subvolume,
+                            cluster_id,
+                            share_id
+                        ))
+            except json.JSONDecodeError:
+                self.log.error("Failed to decode SMB module output")
+            except Exception as e:
+                self.log.error(f"Error processing SMB metadata: {str(e)}")
+        except Exception as e:
+            self.log.error(f"Failed to get SMB metadata: {str(e)}")
+
     @profile_method(True)
     def collect(self) -> str:
         # Clear the metrics before scraping
@@ -1707,6 +1791,7 @@ class Module(MgrModule, OrchestratorClientMixin):
         self.get_pool_repaired_objects()
         self.get_num_objects()
         self.get_all_daemon_health_metrics()
+        self.get_smb_metadata()
 
         if not self.get_module_option('exclude_perf_counters'):
             self.get_perf_counters()
@@ -1749,21 +1834,17 @@ class Module(MgrModule, OrchestratorClientMixin):
         self.get_file_sd_config()
 
     def configure(self, server_addr: str, server_port: int) -> None:
-        # TODO(redo): this new check is hacky, we should provide an explit cmd
-        # from cephadm to get/check the security status
-
-        # if cephadm is configured with security then TLS must be used
-        cmd = {'prefix': 'orch prometheus get-credentials'}
+        cmd = {'prefix': 'orch get-security-config'}
         ret, out, _ = self.mon_command(cmd)
         if ret == 0 and out is not None:
-            access_info = json.loads(out)
-            if access_info:
-                try:
-                    self.setup_tls_using_cephadm(server_addr, server_port)
+            try:
+                security_config = json.loads(out)
+                if security_config.get('security_enabled', False):
+                    self.setup_tls_config(server_addr, server_port)
                     return
-                except Exception as e:
-                    self.log.exception(f'Failed to setup cephadm based secure monitoring stack: {e}\n',
-                                       'Falling back to default configuration')
+            except Exception as e:
+                self.log.exception(f'Failed to setup cephadm based secure monitoring stack: {e}\n',
+                                   'Falling back to default configuration')
 
         # In any error fallback to plain http mode
         self.setup_default_config(server_addr, server_port)
@@ -1781,8 +1862,10 @@ class Module(MgrModule, OrchestratorClientMixin):
         self.set_uri(build_url(scheme='http', host=self.get_server_addr(),
                      port=server_port, path='/'))
 
-    def setup_tls_using_cephadm(self, server_addr: str, server_port: int) -> None:
-        from mgr_util import verify_tls_files
+    def setup_tls_config(self, server_addr: str, server_port: int) -> None:
+        # Temporarily disabling the verify function due to issues.
+        # Please check verify_tls_files below to more information.
+        # from mgr_util import verify_tls_files
         cmd = {'prefix': 'orch certmgr generate-certificates',
                'module_name': 'prometheus',
                'format': 'json'}
@@ -1795,14 +1878,17 @@ class Module(MgrModule, OrchestratorClientMixin):
             return
 
         cert_key = json.loads(out)
-        self.cert_file = tempfile.NamedTemporaryFile()
+        self.cert_file = NamedTemporaryFile()
         self.cert_file.write(cert_key['cert'].encode('utf-8'))
         self.cert_file.flush()  # cert_tmp must not be gc'ed
-        self.key_file = tempfile.NamedTemporaryFile()
+        self.key_file = NamedTemporaryFile()
         self.key_file.write(cert_key['key'].encode('utf-8'))
         self.key_file.flush()  # pkey_tmp must not be gc'ed
 
-        verify_tls_files(self.cert_file.name, self.key_file.name)
+        # Temporarily disabling the verify function due to issues:
+        # See https://github.com/pyca/bcrypt/issues/694 for details.
+        # Re-enable once the issue is resolved.
+        # verify_tls_files(self.cert_file.name, self.key_file.name)
         cert_file_path, key_file_path = self.cert_file.name, self.key_file.name
 
         cherrypy.config.update({

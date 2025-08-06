@@ -13,7 +13,7 @@ import {
   NgbTooltipModule
 } from '@ng-bootstrap/ng-bootstrap';
 import { ClickOutsideModule } from 'ng-click-outside';
-import { NgChartsModule } from 'ng2-charts';
+import { provideCharts, withDefaultRegisterables, BaseChartDirective } from 'ng2-charts';
 import { SimplebarAngularModule } from 'simplebar-angular';
 import {
   UIShellModule,
@@ -35,9 +35,14 @@ import {
   DropdownModule,
   SelectModule,
   ComboBoxModule,
-  ProgressIndicatorModule
+  ProgressIndicatorModule,
+  PanelModule,
+  LayoutModule,
+  TilesModule,
+  PopoverModule
 } from 'carbon-components-angular';
-
+import EditIcon from '@carbon/icons/es/edit/20';
+import CodeIcon from '@carbon/icons/es/code/16';
 import { MotdComponent } from '~/app/shared/components/motd/motd.component';
 import { DirectivesModule } from '../directives/directives.module';
 import { PipesModule } from '../pipes/pipes.module';
@@ -48,7 +53,7 @@ import { ColorClassFromTextPipe } from './cd-label/color-class-from-text.pipe';
 import { ConfigOptionComponent } from './config-option/config-option.component';
 import { ConfirmationModalComponent } from './confirmation-modal/confirmation-modal.component';
 import { Copy2ClipboardButtonComponent } from './copy2clipboard-button/copy2clipboard-button.component';
-import { CriticalConfirmationModalComponent } from './critical-confirmation-modal/critical-confirmation-modal.component';
+import { DeleteConfirmationModalComponent } from './delete-confirmation-modal/delete-confirmation-modal.component';
 import { CustomLoginBannerComponent } from './custom-login-banner/custom-login-banner.component';
 import { DateTimePickerComponent } from './date-time-picker/date-time-picker.component';
 import { DocComponent } from './doc/doc.component';
@@ -80,9 +85,18 @@ import { HelpTextComponent } from './help-text/help-text.component';
 import { FormAdvancedFieldsetComponent } from './form-advanced-fieldset/form-advanced-fieldset.component';
 import { UpgradableComponent } from './upgradable/upgradable.component';
 import { ProgressComponent } from './progress/progress.component';
+import { SidePanelComponent } from './side-panel/side-panel.component';
+import { ChartsModule } from '@carbon/charts-angular';
+import { InlineMessageComponent } from './inline-message/inline-message.component';
+import { IconComponent } from './icon/icon.component';
+import { DetailsCardComponent } from './details-card/details-card.component';
 
 // Icons
 import InfoIcon from '@carbon/icons/es/information/16';
+import CopyIcon from '@carbon/icons/es/copy/32';
+import downloadIcon from '@carbon/icons/es/download/16';
+import IdeaIcon from '@carbon/icons/es/idea/20';
+import CloseIcon from '@carbon/icons/es/close/16';
 
 @NgModule({
   imports: [
@@ -93,7 +107,6 @@ import InfoIcon from '@carbon/icons/es/information/16';
     NgbPopoverModule,
     NgbProgressbarModule,
     NgbTooltipModule,
-    NgChartsModule,
     ReactiveFormsModule,
     PipesModule,
     DirectivesModule,
@@ -121,7 +134,13 @@ import InfoIcon from '@carbon/icons/es/information/16';
     DropdownModule,
     SelectModule,
     ComboBoxModule,
-    ProgressIndicatorModule
+    ProgressIndicatorModule,
+    BaseChartDirective,
+    PanelModule,
+    ChartsModule,
+    LayoutModule,
+    TilesModule,
+    PopoverModule
   ],
   declarations: [
     SparklineComponent,
@@ -132,7 +151,7 @@ import InfoIcon from '@carbon/icons/es/information/16';
     LoadingPanelComponent,
     ModalComponent,
     NotificationsSidebarComponent,
-    CriticalConfirmationModalComponent,
+    DeleteConfirmationModalComponent,
     ConfirmationModalComponent,
     LanguageSelectorComponent,
     GrafanaComponent,
@@ -163,9 +182,13 @@ import InfoIcon from '@carbon/icons/es/information/16';
     HelpTextComponent,
     FormAdvancedFieldsetComponent,
     UpgradableComponent,
-    ProgressComponent
+    ProgressComponent,
+    SidePanelComponent,
+    IconComponent,
+    InlineMessageComponent,
+    DetailsCardComponent
   ],
-  providers: [],
+  providers: [provideCharts(withDefaultRegisterables())],
   exports: [
     SparklineComponent,
     HelperComponent,
@@ -202,11 +225,23 @@ import InfoIcon from '@carbon/icons/es/information/16';
     HelpTextComponent,
     FormAdvancedFieldsetComponent,
     UpgradableComponent,
-    ProgressComponent
+    ProgressComponent,
+    SidePanelComponent,
+    IconComponent,
+    InlineMessageComponent,
+    DetailsCardComponent
   ]
 })
 export class ComponentsModule {
   constructor(private iconService: IconService) {
-    this.iconService.registerAll([InfoIcon]);
+    this.iconService.registerAll([
+      InfoIcon,
+      CopyIcon,
+      EditIcon,
+      CodeIcon,
+      downloadIcon,
+      IdeaIcon,
+      CloseIcon
+    ]);
   }
 }

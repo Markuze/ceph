@@ -19,28 +19,32 @@
 
 #include "include/types.h"
 
-#include "MDSContext.h"
+#include "Capability.h"
+#include "Mutation.h" // for MDRequestRef
+#include "LogSegmentRef.h"
 
 #include <map>
 #include <list>
 #include <set>
 #include <string_view>
 
-#include "messages/MExportCaps.h"
-#include "messages/MExportCapsAck.h"
-#include "messages/MExportDir.h"
-#include "messages/MExportDirAck.h"
-#include "messages/MExportDirCancel.h"
-#include "messages/MExportDirDiscover.h"
-#include "messages/MExportDirDiscoverAck.h"
-#include "messages/MExportDirFinish.h"
-#include "messages/MExportDirNotify.h"
-#include "messages/MExportDirNotifyAck.h"
-#include "messages/MExportDirPrep.h"
-#include "messages/MExportDirPrepAck.h"
-#include "messages/MGatherCaps.h"
-
+class MDCache;
+class MDSContext;
+class MDSMap;
 class MDSRank;
+class MExportCaps;
+class MExportCapsAck;
+class MExportDir;
+class MExportDirAck;
+class MExportDirCancel;
+class MExportDirDiscover;
+class MExportDirDiscoverAck;
+class MExportDirFinish;
+class MExportDirNotify;
+class MExportDirNotifyAck;
+class MExportDirPrep;
+class MExportDirPrepAck;
+class MGatherCaps;
 class CDir;
 class CInode;
 class CDentry;
@@ -212,7 +216,7 @@ public:
 				std::map<client_t,client_metadata_t>& exported_client_metadata_map);
   void finish_export_inode(CInode *in, mds_rank_t target,
 			   std::map<client_t,Capability::Import>& peer_imported,
-			   MDSContext::vec& finished);
+			   std::vector<MDSContext*>& finished);
   void finish_export_inode_caps(CInode *in, mds_rank_t target,
 			        std::map<client_t,Capability::Import>& peer_imported);
 
@@ -224,14 +228,14 @@ public:
                         uint64_t &num_exported);
   void finish_export_dir(CDir *dir, mds_rank_t target,
 			 std::map<inodeno_t,std::map<client_t,Capability::Import> >& peer_imported,
-			 MDSContext::vec& finished, int *num_dentries);
+			 std::vector<MDSContext*>& finished, int *num_dentries);
 
   void clear_export_proxy_pins(CDir *dir);
 
   void export_caps(CInode *in);
 
   void decode_import_inode(CDentry *dn, bufferlist::const_iterator& blp,
-			   mds_rank_t oldauth, LogSegment *ls,
+			   mds_rank_t oldauth, LogSegmentRef const& ls,
 			   std::map<CInode*, std::map<client_t,Capability::Export> >& cap_imports,
 			   std::list<ScatterLock*>& updated_scatterlocks);
   void decode_import_inode_caps(CInode *in, bool auth_cap, bufferlist::const_iterator &blp,
@@ -244,7 +248,7 @@ public:
 			mds_rank_t oldauth,
 			CDir *import_root,
 			EImportStart *le, 
-			LogSegment *ls,
+			LogSegmentRef const& ls,
 			std::map<CInode*, std::map<client_t,Capability::Export> >& cap_imports,
 			std::list<ScatterLock*>& updated_scatterlocks, int &num_imported);
 
@@ -357,7 +361,7 @@ protected:
   void child_export_finish(std::shared_ptr<export_base_t>& parent, bool success);
   void encode_export_prep_trace(bufferlist& bl, CDir *bound, CDir *dir, export_state_t &es,
                                std::set<inodeno_t> &inodes_added, std::set<dirfrag_t> &dirfrags_added);
-  void decode_export_prep_trace(bufferlist::const_iterator& blp, mds_rank_t oldauth, MDSContext::vec &finished);
+  void decode_export_prep_trace(bufferlist::const_iterator& blp, mds_rank_t oldauth, std::vector<MDSContext*> &finished);
 
   void handle_gather_caps(const cref_t<MGatherCaps> &m);
 

@@ -12,9 +12,15 @@ import {
   ProgressIndicatorModule,
   InputModule,
   ModalModule,
-  TreeviewModule
+  TreeviewModule,
+  ListModule,
+  ToggletipModule,
+  IconModule,
+  IconService
 } from 'carbon-components-angular';
-
+import Analytics from '@carbon/icons/es/analytics/16';
+import CloseFilled from '@carbon/icons/es/close--filled/16';
+import ProgressBarRoundIcon from '@carbon/icons/es/progress-bar--round/32';
 import {
   NgbActiveModal,
   NgbDatepickerModule,
@@ -26,7 +32,7 @@ import {
   NgbTooltipModule,
   NgbTypeaheadModule
 } from '@ng-bootstrap/ng-bootstrap';
-import { NgxPipeFunctionModule } from 'ngx-pipe-function';
+import { PipesModule } from '~/app/shared/pipes/pipes.module';
 
 import { SharedModule } from '~/app/shared/shared.module';
 import { PerformanceCounterModule } from '../performance-counter/performance-counter.module';
@@ -96,7 +102,7 @@ import { MultiClusterDetailsComponent } from './multi-cluster/multi-cluster-deta
     NgbDatepickerModule,
     NgbPopoverModule,
     NgbDropdownModule,
-    NgxPipeFunctionModule,
+    PipesModule,
     NgbProgressbarModule,
     DashboardV3Module,
     ComboBoxModule,
@@ -106,10 +112,12 @@ import { MultiClusterDetailsComponent } from './multi-cluster/multi-cluster-deta
     ProgressIndicatorModule,
     ButtonModule,
     InputModule,
-    ModalModule
+    ModalModule,
+    ListModule,
+    ToggletipModule,
+    IconModule
   ],
   declarations: [
-    HostsComponent,
     MonitorComponent,
     ConfigurationComponent,
     OsdListComponent,
@@ -153,8 +161,13 @@ import { MultiClusterDetailsComponent } from './multi-cluster/multi-cluster-deta
     MultiClusterComponent,
     MultiClusterFormComponent,
     MultiClusterListComponent,
-    MultiClusterDetailsComponent
+    MultiClusterDetailsComponent,
+    HostsComponent
   ],
   providers: [NgbActiveModal]
 })
-export class ClusterModule {}
+export class ClusterModule {
+  constructor(private iconService: IconService) {
+    this.iconService.registerAll([Analytics, CloseFilled, ProgressBarRoundIcon]);
+  }
+}

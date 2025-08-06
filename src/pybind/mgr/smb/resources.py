@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional, Tuple, Union, cast
 
+import base64
 import errno
 import json
 
@@ -7,6 +8,7 @@ import yaml
 
 from ceph.deployment.service_spec import (
     PlacementSpec,
+    SMBClusterBindIPSpec,
     SMBClusterPublicIPSpec,
     SpecValidationError,
 )
@@ -20,11 +22,14 @@ from .enums import (
     JoinSourceType,
     LoginAccess,
     LoginCategory,
+    PasswordFilter,
     SMBClustering,
     UserGroupSourceType,
 )
 from .proto import Self, Simplified
 from .utils import checked
+
+ConversionOp = Tuple[PasswordFilter, PasswordFilter]
 
 
 def _get_intent(data: Simplified) -> Intent:
@@ -93,6 +98,9 @@ class _RBase:
     def to_simplified(self) -> Simplified:
         rc = getattr(self, '_resource_config')
         return rc.object_to_simplified(self)
+
+    def convert(self, operation: ConversionOp) -> Self:
+        return self
 
 
 @resourcelib.component()
@@ -187,6 +195,8 @@ class Share(_RBase):
     name: str = ''
     readonly: bool = False
     browseable: bool = True
+    comment: Optional[str] = None
+    max_connections: Optional[int] = None
     cephfs: Optional[CephFSStorage] = None
     custom_smb_share_options: Optional[Dict[str, str]] = None
     login_control: Optional[List[LoginAccessEntry]] = None
@@ -210,6 +220,12 @@ class Share(_RBase):
         # currently only cephfs is supported
         if self.cephfs is None:
             raise ValueError('a cephfs configuration is required')
+        if self.max_connections is not None and self.max_connections < 0:
+            raise ValueError(
+                'max_connections must be 0 or a non-negative integer'
+            )
+        if self.comment is not None and '\n' in self.comment:
+            raise ValueError('Comment cannot contain newlines')
         validation.check_custom_options(self.custom_smb_share_options)
         if self.restrict_access and not self.login_control:
             raise ValueError(
@@ -240,6 +256,12 @@ class JoinAuthValues(_RBase):
     username: str
     password: str
 
+    def convert(self, operation: ConversionOp) -> Self:
+        return self.__class__(
+            username=self.username,
+            password=_password_convert(self.password, operation),
+        )
+
 
 @resourcelib.component()
 class JoinSource(_RBase):
@@ -266,6 +288,20 @@ class UserGroupSettings(_RBase):
 
     users: List[Dict[str, str]]
     groups: List[Dict[str, str]]
+
+    def convert(self, operation: ConversionOp) -> Self:
+        def _convert_pw_key(dct: Dict[str, str]) -> Dict[str, str]:
+            pw = dct.get('password', None)
+            if pw is not None:
+                data = dict(dct)
+                data["password"] = _password_convert(pw, operation)
+                return data
+            return dct
+
+        return self.__class__(
+            users=[_convert_pw_key(u) for u in self.users],
+            groups=self.groups,
+        )
 
 
 @resourcelib.component()
@@ -369,6 +405,40 @@ class ClusterPublicIPAssignment(_RBase):
             raise ValueError(str(err)) from err
 
 
+# A resource component wrapper around the service spec class
+# SMBClusterBindIPSpec
+@resourcelib.component()
+class ClusterBindIP(_RBase):
+    """Cluster Bind IP address or network.
+    Restricts what addresses SMB services and/or containers will bind
+    to when run on a cluster node.
+    """
+
+    address: str = ''
+    network: str = ''
+
+    def to_spec(self) -> SMBClusterBindIPSpec:
+        if self.address:
+            kwargs = {'address': self.address}
+        elif self.network:
+            kwargs = {'network': self.network}
+        else:
+            raise ValueError('ClusterBindIP has no values')
+        return SMBClusterBindIPSpec(**kwargs)
+
+    def validate(self) -> None:
+        try:
+            self.to_spec().validate()
+        except SpecValidationError as err:
+            raise ValueError(str(err)) from err
+
+    @resourcelib.customize
+    def _customize_resource(rc: resourcelib.Resource) -> resourcelib.Resource:
+        rc.address.quiet = True
+        rc.network.quiet = True
+        return rc
+
+
 @resourcelib.resource('ceph.smb.cluster')
 class Cluster(_RBase):
     """Represents a cluster (instance) that is / should be present."""
@@ -385,6 +455,10 @@ class Cluster(_RBase):
     # control if the cluster is really a cluster
     clustering: Optional[SMBClustering] = None
     public_addrs: Optional[List[ClusterPublicIPAssignment]] = None
+    custom_ports: Optional[Dict[str, int]] = None
+    # bind_addrs are used to restrict what IP addresses instances of this
+    # cluster will use
+    bind_addrs: Optional[List[ClusterBindIP]] = None
 
     def validate(self) -> None:
         if not self.cluster_id:
@@ -411,6 +485,11 @@ class Cluster(_RBase):
                     'domain settings not supported for user auth mode'
                 )
         validation.check_custom_options(self.custom_smb_global_options)
+        validation.check_custom_ports(self.custom_ports)
+        if self.bind_addrs is not None and not self.bind_addrs:
+            raise ValueError(
+                'bind_addrs must have at least one value or not be set'
+            )
 
     @resourcelib.customize
     def _customize_resource(rc: resourcelib.Resource) -> resourcelib.Resource:
@@ -446,6 +525,11 @@ class Cluster(_RBase):
             return None
         return [a.to_spec() for a in self.public_addrs]
 
+    def service_spec_bind_addrs(self) -> Optional[List[SMBClusterBindIPSpec]]:
+        if self.bind_addrs is None:
+            return None
+        return [b.to_spec() for b in self.bind_addrs]
+
 
 @resourcelib.resource('ceph.smb.join.auth')
 class JoinAuth(_RBase):
@@ -471,6 +555,14 @@ class JoinAuth(_RBase):
         rc.on_construction_error(InvalidResourceError.wrap)
         return rc
 
+    def convert(self, operation: ConversionOp) -> Self:
+        return self.__class__(
+            auth_id=self.auth_id,
+            intent=self.intent,
+            auth=None if not self.auth else self.auth.convert(operation),
+            linked_to_cluster=self.linked_to_cluster,
+        )
+
 
 @resourcelib.resource('ceph.smb.usersgroups')
 class UsersAndGroups(_RBase):
@@ -495,6 +587,15 @@ class UsersAndGroups(_RBase):
         rc.linked_to_cluster.quiet = True
         rc.on_construction_error(InvalidResourceError.wrap)
         return rc
+
+    def convert(self, operation: ConversionOp) -> Self:
+        values = None if not self.values else self.values.convert(operation)
+        return self.__class__(
+            users_groups_id=self.users_groups_id,
+            intent=self.intent,
+            values=values,
+            linked_to_cluster=self.linked_to_cluster,
+        )
 
 
 # SMBResource is a union of all valid top-level smb resource types.
@@ -537,3 +638,18 @@ def load(data: Simplified) -> List[SMBResource]:
     structured types.
     """
     return resourcelib.load(data)
+
+
+def _password_convert(pvalue: str, operation: ConversionOp) -> str:
+    if operation == (PasswordFilter.NONE, PasswordFilter.BASE64):
+        pvalue = base64.b64encode(pvalue.encode("utf8")).decode("utf8")
+    elif operation == (PasswordFilter.NONE, PasswordFilter.HIDDEN):
+        pvalue = "*" * 16
+    elif operation == (PasswordFilter.BASE64, PasswordFilter.NONE):
+        pvalue = base64.b64decode(pvalue.encode("utf8")).decode("utf8")
+    else:
+        osrc, odst = operation
+        raise ValueError(
+            f"can not convert password value encoding from {osrc} to {odst}"
+        )
+    return pvalue

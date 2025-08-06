@@ -1,7 +1,7 @@
 .. _hardware-recommendations:
 
 ==========================
- hardware recommendations
+ Hardware Recommendations
 ==========================
 
 Ceph is designed to run on commodity hardware, which makes building and
@@ -73,7 +73,7 @@ administrative tasks (like monitoring and metrics) as well as increased
 consumption during recovery:  provisioning ~8GB *per BlueStore OSD* is thus
 advised.
 
-Monitors and managers (ceph-mon and ceph-mgr)
+Monitors and Managers (ceph-mon and ceph-mgr)
 ---------------------------------------------
 
 Monitor and manager daemon memory usage scales with the size of the
@@ -88,7 +88,7 @@ tuning the following settings:
 * :confval:`rocksdb_cache_size`
 
 
-Metadata servers (ceph-mds)
+Metadata Servers (ceph-mds)
 ---------------------------
 
 CephFS metadata daemon memory utilization depends on the configured size of
@@ -173,8 +173,8 @@ drives:
 
 For more
 information on how to effectively use a mix of fast drives and slow drives in
-your Ceph cluster, see the `block and block.db`_ section of the Bluestore
-Configuration Reference.
+your Ceph cluster, see the :ref:`block and block.db <bluestore-mixed-device-config>`
+section of the Bluestore Configuration Reference.
 
 Hard Disk Drives
 ----------------
@@ -613,7 +613,6 @@ found above and elsewhere within this documentation.
 
 
 
-.. _block and block.db: https://docs.ceph.com/en/latest/rados/configuration/bluestore-config-ref/#block-and-block-db
 .. _Ceph blog: https://ceph.com/community/blog/
 .. _Ceph Write Throughput 1: http://ceph.com/community/ceph-performance-part-1-disk-controller-write-throughput/
 .. _Ceph Write Throughput 2: http://ceph.com/community/ceph-performance-part-2-write-throughput-without-ssd-journals/

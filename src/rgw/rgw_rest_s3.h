@@ -214,7 +214,6 @@ public:
   ~RGWGetBucketWebsite_ObjStore_S3() override {}
 
   void send_response() override;
-  virtual std::string canonical_name() const override { return fmt::format("WEBSITE.{}.BUCKET_WEBSITE", s->info.method); }
 };
 
 class RGWSetBucketWebsite_ObjStore_S3 : public RGWSetBucketWebsite {
@@ -224,7 +223,6 @@ public:
 
   int get_params(optional_yield y) override;
   void send_response() override;
-  virtual std::string canonical_name() const override { return fmt::format("WEBSITE.{}.BUCKET_WEBSITE", s->info.method); }
 };
 
 class RGWDeleteBucketWebsite_ObjStore_S3 : public RGWDeleteBucketWebsite {
@@ -233,7 +231,6 @@ public:
   ~RGWDeleteBucketWebsite_ObjStore_S3() override {}
 
   void send_response() override;
-  virtual std::string canonical_name() const override { return fmt::format("WEBSITE.{}.BUCKET_WEBSITE", s->info.method); }
 };
 
 class RGWStatBucket_ObjStore_S3 : public RGWStatBucket_ObjStore {
@@ -603,7 +600,6 @@ class RGWConfigBucketMetaSearch_ObjStore_S3 : public RGWConfigBucketMetaSearch {
 public:
   RGWConfigBucketMetaSearch_ObjStore_S3() {}
   ~RGWConfigBucketMetaSearch_ObjStore_S3() {}
-  virtual std::string canonical_name() const override { return fmt::format("REST.{}.BUCKET_MDSEARCH", s->info.method); }
 
   int get_params(optional_yield y) override;
   void send_response() override;
@@ -621,7 +617,6 @@ class RGWDelBucketMetaSearch_ObjStore_S3 : public RGWDelBucketMetaSearch {
 public:
   RGWDelBucketMetaSearch_ObjStore_S3() {}
   ~RGWDelBucketMetaSearch_ObjStore_S3() {}
-  virtual std::string canonical_name() const override { return fmt::format("REST.{}.BUCKET_MDSEARCH", s->info.method); }
 
   void send_response() override;
 };
@@ -1159,6 +1154,7 @@ public:
 };
 
 class LocalEngine : public AWSEngine {
+  typedef rgw::auth::IdentityApplier::aplptr_t aplptr_t;
   rgw::sal::Driver* driver;
   const rgw::auth::LocalApplier::Factory* const apl_factory;
 

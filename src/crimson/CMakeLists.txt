@@ -1,14 +1,8 @@
 add_library(crimson::cflags INTERFACE IMPORTED)
-set(crimson_cflag_definitions "WITH_SEASTAR=1")
-# disable concepts to address https://github.com/boostorg/asio/issues/312
-if((CMAKE_CXX_COMPILER_ID STREQUAL GNU AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 10) OR
-   (CMAKE_CXX_COMPILER_ID STREQUAL Clang))
- list(APPEND crimson_cflag_definitions
-   "BOOST_ASIO_DISABLE_CONCEPTS")
-endif()
+set(crimson_cflag_definitions "WITH_CRIMSON=1")
+
 set_target_properties(crimson::cflags PROPERTIES
   INTERFACE_COMPILE_DEFINITIONS "${crimson_cflag_definitions}"
-  INTERFACE_COMPILE_OPTIONS $<$<COMPILE_LANGUAGE:CXX>:-Wno-non-virtual-dtor>
   INTERFACE_LINK_LIBRARIES Seastar::seastar)
 
 set(crimson_common_srcs
@@ -39,6 +33,7 @@ add_library(crimson-common STATIC
   ${PROJECT_SOURCE_DIR}/src/common/ceph_argparse.cc
   ${PROJECT_SOURCE_DIR}/src/common/ceph_context.cc
   ${PROJECT_SOURCE_DIR}/src/common/ceph_crypto.cc
+  ${PROJECT_SOURCE_DIR}/src/common/ceph_fs.cc
   ${PROJECT_SOURCE_DIR}/src/common/ceph_hash.cc
   ${PROJECT_SOURCE_DIR}/src/common/ceph_time.cc
   ${PROJECT_SOURCE_DIR}/src/common/ceph_strings.cc
@@ -132,26 +127,17 @@ target_compile_definitions(crimson-common PRIVATE
   "CEPH_INSTALL_FULL_PKGLIBDIR=\"${CEPH_INSTALL_FULL_PKGLIBDIR}\""
   "CEPH_INSTALL_DATADIR=\"${CEPH_INSTALL_DATADIR}\"")
 
-set(crimson_common_deps
-  Boost::iostreams
-  Boost::random
-  json_spirit)
-
-set(crimson_common_public_deps crimson::cflags)
-if(WITH_JAEGER)
-  list(APPEND crimson_common_public_deps jaeger_base)
-endif()
-
-if(NOT WITH_SYSTEM_BOOST)
-  list(APPEND crimson_common_deps ${ZLIB_LIBRARIES})
-endif()
-
 target_link_libraries(crimson-common
   PUBLIC
-    ${crimson_common_public_deps}
+    $<$<BOOL:${WITH_JAEGER}>:jaeger_base>
+    crimson::cflags
   PRIVATE
     crc32 arch
-    ${crimson_common_deps}
+    Boost::iostreams
+    Boost::random
+    json_spirit
+    $<$<NOT:$<BOOL:${WITH_SYSTEM_BOOST}>>:${ZLIB_LIBRARIES}>
+    $<$<BOOL:${WITH_BREAKPAD}>:Breakpad::client>
     OpenSSL::Crypto)
 
 set(crimson_auth_srcs

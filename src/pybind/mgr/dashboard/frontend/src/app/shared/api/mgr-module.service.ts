@@ -1,35 +1,41 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable } from '@angular/core';
-import { BlockUI, NgBlockUI } from 'ng-block-ui';
+import { BlockUIService } from 'ng-block-ui';
 
-import { Observable, timer as observableTimer } from 'rxjs';
+import { Observable, Subject, timer } from 'rxjs';
 import { NotificationService } from '../services/notification.service';
 import { TableComponent } from '../datatable/table/table.component';
 import { Router } from '@angular/router';
+import { MgrModuleInfo } from '../models/mgr-modules.interface';
+import { NotificationType } from '../enum/notification-type.enum';
+import { delay, retryWhen, switchMap, tap } from 'rxjs/operators';
+import { SummaryService } from '../services/summary.service';
+
+const GLOBAL = 'global';
 
 @Injectable({
   providedIn: 'root'
 })
 export class MgrModuleService {
   private url = 'api/mgr/module';
-
-  @BlockUI()
-  blockUI: NgBlockUI;
+  updateCompleted$ = new Subject<void>();
 
   readonly REFRESH_INTERVAL = 2000;
 
   constructor(
+    private blockUI: BlockUIService,
     private http: HttpClient,
     private notificationService: NotificationService,
-    private router: Router
+    private router: Router,
+    private summaryService: SummaryService
   ) {}
 
   /**
    * Get the list of Ceph Mgr modules and their state (enabled/disabled).
    * @return {Observable<Object[]>}
    */
-  list(): Observable<Object[]> {
-    return this.http.get<Object[]>(`${this.url}`);
+  list(): Observable<MgrModuleInfo[]> {
+    return this.http.get<MgrModuleInfo[]>(`${this.url}`);
   }
 
   /**
@@ -83,51 +89,66 @@ export class MgrModuleService {
     module: string,
     enabled: boolean = false,
     table: TableComponent = null,
-    navigateTo: string = ''
+    navigateTo: string = '',
+    notificationText?: string,
+    navigateByUrl?: boolean,
+    reconnectingMessage: string = $localize`Reconnecting, please wait ...`
   ): void {
-    let $obs;
-    const fnWaitUntilReconnected = () => {
-      observableTimer(this.REFRESH_INTERVAL).subscribe(() => {
-        // Trigger an API request to check if the connection is
-        // re-established.
-        this.list().subscribe(
-          () => {
-            // Resume showing the notification toasties.
-            this.notificationService.suspendToasties(false);
-            // Unblock the whole UI.
-            this.blockUI.stop();
-            // Reload the data table content.
-            if (table) {
-              table.refreshBtn();
-            }
-            if (navigateTo) {
-              this.router.navigate([navigateTo]);
-            }
-          },
-          () => {
-            fnWaitUntilReconnected();
-          }
-        );
-      });
-    };
+    const moduleToggle$ = enabled ? this.disable(module) : this.enable(module);
 
-    // Note, the Ceph Mgr is always restarted when a module
-    // is enabled/disabled.
-    if (enabled) {
-      $obs = this.disable(module);
-    } else {
-      $obs = this.enable(module);
-    }
-    $obs.subscribe(
-      () => undefined,
-      () => {
-        // Suspend showing the notification toasties.
+    moduleToggle$.subscribe({
+      next: () => {
+        // Module toggle succeeded
+        this.updateCompleted$.next();
+      },
+      error: () => {
+        // Module toggle failed, trigger reconnect flow
         this.notificationService.suspendToasties(true);
-        // Block the whole UI to prevent user interactions until
-        // the connection to the backend is reestablished
-        this.blockUI.start($localize`Reconnecting, please wait ...`);
-        fnWaitUntilReconnected();
+        this.blockUI.start(GLOBAL, reconnectingMessage);
+
+        timer(this.REFRESH_INTERVAL)
+          .pipe(
+            switchMap(() => this.list()),
+            retryWhen((errors) =>
+              errors.pipe(
+                tap(() => {
+                  // Keep retrying until list() succeeds
+                }),
+                delay(this.REFRESH_INTERVAL)
+              )
+            )
+          )
+          .subscribe({
+            next: () => {
+              // Reconnection successful
+              this.notificationService.suspendToasties(false);
+              this.blockUI.stop(GLOBAL);
+
+              if (table) {
+                table.refreshBtn();
+              }
+
+              if (notificationText) {
+                this.notificationService.show(
+                  NotificationType.success,
+                  $localize`${notificationText}`
+                );
+              }
+
+              if (navigateTo) {
+                const navigate = () => this.router.navigate([navigateTo]);
+                if (navigateByUrl) {
+                  this.router.navigateByUrl('/', { skipLocationChange: true }).then(navigate);
+                } else {
+                  navigate();
+                }
+              }
+
+              this.updateCompleted$.next();
+              this.summaryService.startPolling();
+            }
+          });
       }
-    );
+    });
   }
 }

@@ -6,7 +6,16 @@ import pathlib
 import re
 import socket
 
-from typing import List, Dict, Tuple, Optional, Any, NamedTuple
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    NamedTuple,
+    Optional,
+    Tuple,
+)
 
 from .. import context_getters
 from .. import daemon_form
@@ -15,6 +24,7 @@ from .. import deployment_utils
 from .. import file_utils
 from ..call_wrappers import call, CallVerbosity
 from ceph.cephadm.images import DefaultImages
+from ..constants import DEFAULT_IMAGE
 from ..container_daemon_form import ContainerDaemonForm, daemon_to_container
 from ..container_engines import Podman
 from ..container_types import (
@@ -43,6 +53,7 @@ _MUTEX_SUBCMD = [_SCC, 'ctdb-rados-mutex']  # requires rados uri
 class Features(enum.Enum):
     DOMAIN = 'domain'
     CLUSTERED = 'clustered'
+    CEPHFS_PROXY = 'cephfs-proxy'
 
     @classmethod
     def valid(cls, value: str) -> bool:
@@ -68,6 +79,43 @@ class ClusterPublicIP(NamedTuple):
         return cls(address, destinations)
 
 
+class BindInterface(NamedTuple):
+    network: str
+    address: str
+    iface: str
+
+    def __str__(self) -> str:
+        if self.address and self.iface:
+            info = f'{self.address}@{self.iface}'
+        else:
+            info = f'network:{self.network}'
+        return f'BindInterface<{info}>'
+
+    def conf_interface(self) -> str:
+        if self.iface:
+            return f'"{self.iface};options=dynamic"'
+        if self.address:
+            return self.address
+        if self.network:
+            return self.network
+        raise ValueError('missing bind interface data')
+
+
+class Ports(enum.Enum):
+    SMB = 445
+    SMBMETRICS = 9922
+    CTDB = 4379
+
+    def customized(self, service_ports: Dict[str, int]) -> int:
+        """Return a custom port value if it is present in service_ports or the
+        default port value if it is not present.
+        """
+        port = service_ports.get(self.name.lower())
+        if port:
+            return int(port)
+        return int(self.value)
+
+
 @dataclasses.dataclass(frozen=True)
 class Config:
     identity: DaemonIdentity
@@ -82,6 +130,7 @@ class Config:
     user_sources: List[str] = dataclasses.field(default_factory=list)
     custom_dns: List[str] = dataclasses.field(default_factory=list)
     smb_port: int = 0
+    ctdb_port: int = 0
     ceph_config_entity: str = 'client.admin'
     vhostname: str = ''
     metrics_image: str = ''
@@ -94,6 +143,8 @@ class Config:
     cluster_public_addrs: List[ClusterPublicIP] = dataclasses.field(
         default_factory=list
     )
+    bind_to: List[BindInterface] = dataclasses.field(default_factory=list)
+    proxy_image: str = ''
 
     def config_uris(self) -> List[str]:
         uris = [self.source_config]
@@ -126,7 +177,10 @@ class ContainerCommon:
         return {}
 
     def envs_list(self) -> List[str]:
-        return []
+        """Wrapper for .envs() that returns a list of `key=value` strings
+        for all env vars.
+        """
+        return [f'{k}={v}' for (k, v) in self.envs().items()]
 
     def args(self) -> List[str]:
         return []
@@ -162,9 +216,6 @@ class SambaContainerCommon(ContainerCommon):
             # samba container specific variant
             environ['NODE_NUMBER'] = environ['RANK']
         return environ
-
-    def envs_list(self) -> List[str]:
-        return [f'{k}={v}' for (k, v) in self.envs().items()]
 
     def args(self) -> List[str]:
         args = []
@@ -204,13 +255,26 @@ class SMBDContainer(SambaContainerCommon):
         args.append('smbd')
         return args
 
+    def _publish(self, host_port: int, container_port: int) -> Iterator[str]:
+        if not self.cfg.bind_to:
+            yield f'--publish={host_port}:{container_port}'
+            return
+        for bind in self.cfg.bind_to:
+            yield f'--publish={bind.address}:{host_port}:{container_port}'
+
     def container_args(self) -> List[str]:
-        cargs = []
-        if self.cfg.smb_port:
-            cargs.append(f'--publish={self.cfg.smb_port}:{self.cfg.smb_port}')
-        if self.cfg.metrics_port:
-            metrics_port = self.cfg.metrics_port
-            cargs.append(f'--publish={metrics_port}:{metrics_port}')
+        cargs: List[str] = []
+        if not self.cfg.clustered:
+            # if we are not clustered we use container networking (vs. host
+            # networking) and need to publish ports via podman/docker.
+            # All published ports happen at the primary container.
+            if self.cfg.smb_port:
+                cargs.extend(
+                    self._publish(self.cfg.smb_port, Ports.SMB.value)
+                )
+            if self.cfg.metrics_port:
+                metrics_port = self.cfg.metrics_port
+                cargs.extend(self._publish(metrics_port, metrics_port))
         cargs.extend(_container_dns_args(self.cfg))
         return cargs
 
@@ -270,6 +334,25 @@ class SMBMetricsContainer(ContainerCommon):
         args = []
         if self.cfg.metrics_port > 0:
             args.append(f'--port={self.cfg.metrics_port}')
+        if self.cfg.bind_to:
+            args.append(f'--address={self.cfg.bind_to[0].address}')
+        return args
+
+
+class CephFSProxyContainer(ContainerCommon):
+    def name(self) -> str:
+        return 'proxy'
+
+    def args(self) -> List[str]:
+        return []
+
+    def container_args(self) -> List[str]:
+        args = super().container_args()
+        # Set the working directory to something that libcephfsd can create
+        # O_TMPFILE style temporary files in (aka. not overlayfs on centos9).
+        # We already need to map in /run so reuse that (for now).
+        args.append('--workdir=/run')
+        args.append('--entrypoint=/usr/sbin/libcephfsd')
         return args
 
 
@@ -383,8 +466,6 @@ class SMB(ContainerDaemonForm):
         self._config_keyring = context_getters.get_config_and_keyring(ctx)
         self._cached_layout: Optional[ContainerLayout] = None
         self._rank_info = context_getters.fetch_rank_info(ctx) or (-1, -1)
-        self.smb_port = 445
-        self.metrics_port = 9922
         self._network_mapper = _NetworkMapper(ctx)
         logger.debug('Created SMB ContainerDaemonForm instance')
 
@@ -424,10 +505,12 @@ class SMB(ContainerDaemonForm):
         ceph_config_entity = configs.get('config_auth_entity', '')
         vhostname = configs.get('virtual_hostname', '')
         metrics_image = configs.get('metrics_image', '')
-        metrics_port = int(configs.get('metrics_port', '0'))
+        service_ports = configs.get('service_ports', {})
+        proxy_image = configs.get('proxy_image', '')
         cluster_meta_uri = configs.get('cluster_meta_uri', '')
         cluster_lock_uri = configs.get('cluster_lock_uri', '')
         cluster_public_addrs = configs.get('cluster_public_addrs', [])
+        bind_networks = configs.get('bind_networks', [])
 
         if not instance_id:
             raise Error('invalid instance (cluster) id')
@@ -445,10 +528,17 @@ class SMB(ContainerDaemonForm):
             # the cluster/instanced id to the system hostname
             hname = socket.getfqdn()
             vhostname = f'{instance_id}-{hname}'
+        # if the proxy is not to be deployed don't set the image
+        # if the proxy is to be deployed use the supplied image or
+        # the default ceph image
+        if Features.CEPHFS_PROXY.value not in instance_features:
+            proxy_image = ''
+        elif not proxy_image:
+            proxy_image = DEFAULT_IMAGE
         _public_addrs = [
             ClusterPublicIP.convert(v) for v in cluster_public_addrs
         ]
-        if _public_addrs:
+        if _public_addrs or bind_networks:
             # cache the cephadm networks->devices mapping for later
             self._network_mapper.load()
 
@@ -462,16 +552,19 @@ class SMB(ContainerDaemonForm):
             custom_dns=custom_dns,
             domain_member=Features.DOMAIN.value in instance_features,
             clustered=Features.CLUSTERED.value in instance_features,
-            smb_port=self.smb_port,
+            smb_port=Ports.SMB.customized(service_ports),
+            ctdb_port=Ports.CTDB.customized(service_ports),
             ceph_config_entity=ceph_config_entity,
             vhostname=vhostname,
             metrics_image=metrics_image,
-            metrics_port=metrics_port,
+            metrics_port=Ports.SMBMETRICS.customized(service_ports),
             rank=rank,
             rank_generation=rank_gen,
             cluster_meta_uri=cluster_meta_uri,
             cluster_lock_uri=cluster_lock_uri,
             cluster_public_addrs=_public_addrs,
+            proxy_image=proxy_image,
+            bind_to=self._network_mapper.bind_interfaces(bind_networks),
         )
         self._files = files
         logger.debug('SMB Instance Config: %s', self._instance_cfg)
@@ -524,6 +617,11 @@ class SMB(ContainerDaemonForm):
         metrics_port = self._cfg.metrics_port
         if metrics_image and metrics_port > 0:
             ctrs.append(SMBMetricsContainer(self._cfg, metrics_image))
+
+        if self._cfg.proxy_image:
+            ctrs.append(
+                CephFSProxyContainer(self._cfg, self._cfg.proxy_image)
+            )
 
         if self._cfg.clustered:
             init_ctrs += [
@@ -683,18 +781,33 @@ class SMB(ContainerDaemonForm):
     def customize_container_endpoints(
         self, endpoints: List[EndPoint], deployment_type: DeploymentType
     ) -> None:
-        if not any(ep.port == self.smb_port for ep in endpoints):
-            endpoints.append(EndPoint('0.0.0.0', self.smb_port))
-        if self.metrics_port > 0:
-            if not any(ep.port == self.metrics_port for ep in endpoints):
-                endpoints.append(EndPoint('0.0.0.0', self.metrics_port))
+        if self._cfg.bind_to:
+            addrs = [b.address for b in self._cfg.bind_to]
+            # filter out any endpoints that don't refer to the specific
+            # IP addresses our service will bind to
+            endpoints[:] = [ep for ep in endpoints if ep.ip in addrs]
+        else:
+            addrs = ['0.0.0.0']
+
+        if not any(ep.port == self._cfg.smb_port for ep in endpoints):
+            for addr in addrs:
+                endpoints.append(EndPoint(addr, self._cfg.smb_port))
+        if self._cfg.clustered and not any(
+            ep.port == self._cfg.ctdb_port for ep in endpoints
+        ):
+            for addr in addrs:
+                endpoints.append(EndPoint(addr, self._cfg.ctdb_port))
+        if self._cfg.metrics_port > 0:
+            if not any(ep.port == self._cfg.metrics_port for ep in endpoints):
+                for addr in addrs:
+                    endpoints.append(EndPoint(addr, self._cfg.metrics_port))
 
     def prepare_data_dir(self, data_dir: str, uid: int, gid: int) -> None:
         self.validate()
         ddir = pathlib.Path(data_dir)
         etc_samba_ctr = ddir / 'etc-samba-container'
         file_utils.makedirs(etc_samba_ctr, uid, gid, 0o770)
-        file_utils.makedirs(ddir / 'lib-samba', uid, gid, 0o770)
+        file_utils.makedirs(ddir / 'lib-samba', uid, gid, 0o755)
         file_utils.makedirs(ddir / 'run', uid, gid, 0o770)
         if self._files:
             file_utils.populate_files(data_dir, self._files, uid, gid)
@@ -705,6 +818,10 @@ class SMB(ContainerDaemonForm):
             file_utils.makedirs(ddir / 'ctdb/etc', uid, gid, 0o770)
             self._write_ctdb_stub_config(etc_samba_ctr / 'ctdb.json')
             self._write_smb_conf_stub(ddir / 'ctdb/smb.conf')
+            if self._cfg.bind_to:
+                self._write_interfaces_conf_stub(
+                    ddir / 'lib-samba/smb.interfaces.conf'
+                )
 
     def _write_ctdb_stub_config(self, path: pathlib.Path) -> None:
         reclock_cmd = ' '.join(_MUTEX_SUBCMD + [self._cfg.cluster_lock_uri])
@@ -723,6 +840,12 @@ class SMB(ContainerDaemonForm):
         }
         if self._cfg.ctdb_log_level:
             stub_config['ctdb']['log_level'] = self._cfg.ctdb_log_level
+        if self._cfg.ctdb_port != Ports.CTDB.value:
+            stub_config['ctdb']['ctdb_port'] = self._cfg.ctdb_port
+        if self._cfg.bind_to:
+            stub_config['ctdb']['conf_file_includes'] = [
+                '/var/lib/samba/smb.interfaces.conf'
+            ]
         with file_utils.write_new(path) as fh:
             json.dump(stub_config, fh)
 
@@ -738,6 +861,21 @@ class SMB(ContainerDaemonForm):
         with file_utils.write_new(path) as fh:
             for line in _lines:
                 fh.write(f'{line}\n')
+
+    def _write_interfaces_conf_stub(self, path: pathlib.Path) -> None:
+        if self._cfg.cluster_public_addrs:
+            interfaces = [b.conf_interface() for b in self._cfg.bind_to]
+        else:
+            interfaces = [b.address for b in self._cfg.bind_to]
+        _interfaces = ' '.join(interfaces)
+        _lines = [
+            '[global]',
+            'bind interfaces only = yes',
+            f'interfaces = {_interfaces}',
+        ]
+        with file_utils.write_new(path) as fh:
+            for line in _lines:
+                print(line, file=fh)
 
 
 class _NetworkMapper:
@@ -782,3 +920,31 @@ class _NetworkMapper:
             {'address': a.address, 'interfaces': a.destinations}
             for a in addrs
         ]
+
+    def _host_ips(self) -> Iterable[Tuple[str, str, str]]:
+        for nw_key, nw_value in self._networks.items():
+            for iface, ips in nw_value.items():
+                for ip in ips:
+                    yield ip, iface, nw_key
+
+    def bind_interfaces(self, networks: List[str]) -> List[BindInterface]:
+        import ipaddress
+
+        if not networks:
+            logger.debug('no bind networks given')
+            return []
+
+        _nets = [ipaddress.ip_network(n) for n in networks]
+        logger.info('Bindable networks: %r', _nets)
+        for ip, iface, host_nw in self._host_ips():
+            for _net in _nets:
+                _ip = ipaddress.ip_address(ip)
+                if _ip in _net:
+                    bind = BindInterface(
+                        network=str(_net),
+                        address=ip,
+                        iface=iface,
+                    )
+                    logger.info('In %s found %s', _net, bind)
+                    return [bind]
+        raise ValueError('unable to find any allowed IPs to bind to')

@@ -248,59 +248,6 @@ block_sm_superblock_t make_superblock(
   };
 }
 
-using check_create_device_ertr = BlockSegmentManager::access_ertr;
-using check_create_device_ret = check_create_device_ertr::future<>;
-static check_create_device_ret check_create_device(
-  const std::string &path,
-  size_t size)
-{
-  LOG_PREFIX(block_check_create_device);
-  INFO("path={}, size=0x{:x}", path, size);
-  return seastar::open_file_dma(
-    path,
-    seastar::open_flags::exclusive |
-    seastar::open_flags::rw |
-    seastar::open_flags::create
-  ).then([size, FNAME, &path](auto file) {
-    return seastar::do_with(
-      file,
-      [size, FNAME, &path](auto &f) -> seastar::future<>
-    {
-      DEBUG("path={} created, truncating to 0x{:x}", path, size);
-      ceph_assert(f);
-      return f.truncate(
-        size
-      ).then([&f, size] {
-        return f.allocate(0, size);
-      }).finally([&f] {
-        return f.close();
-      });
-    });
-  }).then_wrapped([&path, FNAME](auto f) -> check_create_device_ret {
-    if (f.failed()) {
-      try {
-	f.get();
-	return seastar::now();
-      } catch (const std::system_error &e) {
-	if (e.code().value() == EEXIST) {
-          ERROR("path={} exists", path);
-	  return seastar::now();
-	} else {
-          ERROR("path={} creation error -- {}", path, e);
-	  return crimson::ct_error::input_output_error::make();
-	}
-      } catch (...) {
-        ERROR("path={} creation error", path);
-	return crimson::ct_error::input_output_error::make();
-      }
-    }
-
-    DEBUG("path={} complete", path);
-    std::ignore = f.discard_result();
-    return seastar::now();
-  });
-}
-
 using open_device_ret = 
   BlockSegmentManager::access_ertr::future<
   std::pair<seastar::file, seastar::stat_data>
@@ -346,7 +293,10 @@ write_superblock(
     bufferptr(ceph::buffer::create_page_aligned(sb.block_size)),
     [=, &device](auto &bp)
   {
+    //  Encode SEASTORE_SUPERBLOCK_SIGN at offset 0 before
+    //  encoding anything else
     bufferlist bl;
+    bl.append(SEASTORE_SUPERBLOCK_SIGN);
     encode(sb, bl);
     auto iter = bl.begin();
     assert(bl.length() < sb.block_size);
@@ -376,14 +326,23 @@ read_superblock(seastar::file &device, seastar::stat_data sd)
       bl.push_back(bp);
       block_sm_superblock_t ret;
       auto bliter = bl.cbegin();
+      // Validate the magic prefix
+      std::string sb_magic;
+      bliter.copy(SEASTORE_SUPERBLOCK_SIGN_LEN, sb_magic);
+      if (sb_magic != SEASTORE_SUPERBLOCK_SIGN) {
+        ERROR("invalid superblock signature: got '{}' expected '{}'",
+	      sb_magic, SEASTORE_SUPERBLOCK_SIGN);
+        ceph_abort_msg("invalid superblock signature");
+      }
+
       try {
         decode(ret, bliter);
       } catch (...) {
         ERROR("got decode error!");
         ceph_assert(0 == "invalid superblock");
       }
-      assert(ceph::encoded_sizeof<block_sm_superblock_t>(ret) <
-             sd.block_size);
+      assert(ceph::encoded_sizeof<block_sm_superblock_t>(ret) +
+	     SEASTORE_SUPERBLOCK_SIGN_LEN <= sd.block_size);
       return BlockSegmentManager::access_ertr::future<block_sm_superblock_t>(
         BlockSegmentManager::access_ertr::ready_future_marker{},
         ret);

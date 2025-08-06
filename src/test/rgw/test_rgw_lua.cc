@@ -17,19 +17,6 @@ using boost::container::flat_set;
 using rgw::auth::Identity;
 using rgw::auth::Principal;
 
-class CctCleaner {
-  CephContext* cct;
-public:
-  CctCleaner(CephContext* _cct) : cct(_cct) {}
-  ~CctCleaner() { 
-#ifdef WITH_SEASTAR
-    delete cct; 
-#else
-    cct->put(); 
-#endif
-  }
-};
-
 class FakeIdentity : public Identity {
 public:
   FakeIdentity() = default;
@@ -42,11 +29,15 @@ public:
     return 0;
   };
 
-  bool is_admin_of(const rgw_owner& o) const override {
+  bool is_admin() const override {
     return false;
   }
 
   bool is_owner_of(const rgw_owner& uid) const override {
+    return false;
+  }
+
+  bool is_root() const override {
     return false;
   }
 
@@ -56,6 +47,10 @@ public:
 
   uint32_t get_identity_type() const override {
     return TYPE_RGW;
+  }
+
+  std::optional<rgw::ARN> get_caller_identity() const override {
+    return std::nullopt;
   }
 
   string get_acct_name() const override {
@@ -163,15 +158,11 @@ public:
   }
 };
 
-auto g_cct = new CephContext(CEPH_ENTITY_TYPE_CLIENT);
-
-CctCleaner cleaner(g_cct);
-
 tracing::Tracer tracer;
 
 inline std::unique_ptr<sal::RadosStore> make_store() {
   auto context_pool = std::make_unique<ceph::async::io_context_pool>(
-    g_cct->_conf->rgw_thread_pool_size);
+    g_ceph_context->_conf->rgw_thread_pool_size);
 
   struct StoreBundle : public sal::RadosStore {
     std::unique_ptr<ceph::async::io_context_pool> context_pool;
@@ -190,7 +181,7 @@ class TestLuaManager : public rgw::sal::StoreLuaManager {
     std::string lua_script;
     unsigned read_time = 0;
     TestLuaManager() {
-      rgw_perf_start(g_cct);
+      rgw_perf_start(g_ceph_context);
     }
     int get_script(const DoutPrefixProvider* dpp, optional_yield y, const std::string& key, std::string& script) override {
       std::this_thread::sleep_for(std::chrono::seconds(read_time));
@@ -216,7 +207,7 @@ class TestLuaManager : public rgw::sal::StoreLuaManager {
       return 0;
     }
     ~TestLuaManager() {
-      rgw_perf_stop(g_cct);
+      rgw_perf_stop(g_ceph_context);
     }
 };
 
@@ -231,9 +222,9 @@ void set_read_time(rgw::sal::LuaManager* manager, unsigned read_time) {
   auto store = make_store();                   \
   pe.lua.manager = std::make_unique<TestLuaManager>(); \
   RGWEnv e; \
-  req_state s(g_cct, pe, &e, 0);
+  req_state s(g_ceph_context, pe, &e, 0);
 
-#define INIT_TRACE tracer.init(g_cct, "test"); \
+#define INIT_TRACE tracer.init(g_ceph_context, "test"); \
                    s.trace = tracer.start_trace("test", true);
 
 TEST(TestRGWLua, EmptyScript)
@@ -896,7 +887,7 @@ class TestBackground : public rgw::lua::Background {
 public:
   TestBackground(sal::RadosStore* store, rgw::sal::LuaManager* manager) : 
     rgw::lua::Background(store, 
-        g_cct, 
+        g_ceph_context,
         manager,
         1 /* run every second */) {
     }

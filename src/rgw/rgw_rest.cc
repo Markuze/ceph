@@ -83,6 +83,7 @@ const static struct rgw_http_status_code http_codes[] = {
   { 500, "Internal Server Error" },
   { 501, "Not Implemented" },
   { 503, "Slow Down"},
+  { 507, "Insufficient Storage"},
   { 0, NULL },
 };
 
@@ -500,6 +501,11 @@ void dump_time(req_state *s, const char *name, real_time t)
   rgw_to_iso8601(t, buf, sizeof(buf));
 
   s->formatter->dump_string(name, buf);
+}
+
+void dump_time_exact_seconds(req_state *s, const char *name, real_time t)
+{
+  dump_time(s, name, std::chrono::time_point_cast<std::chrono::seconds>(t));
 }
 
 void dump_owner(req_state *s, const std::string& id, const string& name,
@@ -1925,7 +1931,20 @@ int RGWHandler_REST::read_permissions(RGWOp* op_obj, optional_yield y)
     return -EINVAL;
   }
 
-  return do_read_permissions(op_obj, only_bucket, y);
+  auto ret = do_read_permissions(op_obj, only_bucket, y);
+  switch (s->op) {
+  case OP_HEAD:
+  case OP_GET:
+    if (ret == -ENOENT /* note, access already accounted for */) [[unlikely]] {
+      (void) s->object->load_obj_state(s, s->yield, true /* follow_olh */);
+      auto tf = s->object->is_delete_marker() ? "true" : "false";
+      dump_header(s, "x-amz-delete-marker", tf);
+    }
+  default:
+    break;
+  }
+
+  return ret;
 }
 
 void RGWRESTMgr::register_resource(string resource, RGWRESTMgr *mgr)

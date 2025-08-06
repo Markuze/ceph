@@ -9,10 +9,13 @@ import { NotificationService } from '~/app/shared/services/notification.service'
 import { MgrModuleListComponent } from '~/app/ceph/cluster/mgr-modules/mgr-module-list/mgr-module-list.component';
 import { ToastrModule } from 'ngx-toastr';
 import { SharedModule } from '../shared.module';
+import { BlockUIService } from 'ng-block-ui';
+import { SummaryService } from '../services/summary.service';
 
 describe('MgrModuleService', () => {
   let service: MgrModuleService;
   let httpTesting: HttpTestingController;
+  let blockUIService: BlockUIService;
 
   configureTestBed({
     declarations: [MgrModuleListComponent],
@@ -23,6 +26,7 @@ describe('MgrModuleService', () => {
   beforeEach(() => {
     service = TestBed.inject(MgrModuleService);
     httpTesting = TestBed.inject(HttpTestingController);
+    blockUIService = TestBed.inject(BlockUIService);
   });
 
   afterEach(() => {
@@ -83,8 +87,10 @@ describe('MgrModuleService', () => {
 
       component.selection = new CdTableSelection();
       spyOn(notificationService, 'suspendToasties');
-      spyOn(service.blockUI, 'start');
-      spyOn(service.blockUI, 'stop');
+      spyOn(blockUIService, 'start');
+      spyOn(blockUIService, 'stop');
+      const summaryService = TestBed.inject(SummaryService);
+      spyOn(summaryService, 'startPolling');
     });
 
     it('should enable module', fakeAsync(() => {
@@ -99,11 +105,12 @@ describe('MgrModuleService', () => {
       service.updateModuleState(selected.name, selected.enabled);
       tick(service.REFRESH_INTERVAL);
       tick(service.REFRESH_INTERVAL);
+      tick(service.REFRESH_INTERVAL);
       expect(service.enable).toHaveBeenCalledWith('foo');
       expect(service.list).toHaveBeenCalledTimes(2);
       expect(notificationService.suspendToasties).toHaveBeenCalledTimes(2);
-      expect(service.blockUI.start).toHaveBeenCalled();
-      expect(service.blockUI.stop).toHaveBeenCalled();
+      expect(blockUIService.start).toHaveBeenCalled();
+      expect(blockUIService.stop).toHaveBeenCalled();
     }));
 
     it('should disable module', fakeAsync(() => {
@@ -120,8 +127,8 @@ describe('MgrModuleService', () => {
       expect(service.disable).toHaveBeenCalledWith('bar');
       expect(service.list).toHaveBeenCalledTimes(1);
       expect(notificationService.suspendToasties).toHaveBeenCalledTimes(2);
-      expect(service.blockUI.start).toHaveBeenCalled();
-      expect(service.blockUI.stop).toHaveBeenCalled();
+      expect(blockUIService.start).toHaveBeenCalled();
+      expect(blockUIService.stop).toHaveBeenCalled();
     }));
 
     it('should not disable module without selecting one', () => {

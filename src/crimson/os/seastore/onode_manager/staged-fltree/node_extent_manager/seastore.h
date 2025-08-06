@@ -146,7 +146,7 @@ class SeastoreNodeExtentManager final: public TransactionManagerHandle {
         SUBERRORT(seastore_onode,
             "allocated {}B but got invalid extent: {}",
             t, len, *extent);
-        ceph_abort("fatal error");
+        ceph_abort_msg("fatal error");
       }
       assert(extent->get_length() == len);
       std::ignore = len;
@@ -159,7 +159,7 @@ class SeastoreNodeExtentManager final: public TransactionManagerHandle {
 
   retire_iertr::future<> retire_extent(
       Transaction& t, NodeExtentRef _extent) override {
-    LogicalCachedExtentRef extent = _extent;
+    LogicalChildNodeRef extent = _extent;
     auto addr = extent->get_laddr();
     auto len = extent->get_length();
     SUBDEBUGT(seastore_onode,

@@ -2,7 +2,6 @@
 // vim: ts=8 sw=2 smarttab
 
 #include "cls/rbd/cls_rbd_client.h"
-#include "cls/lock/cls_lock_client.h"
 #include "include/buffer.h"
 #include "include/encoding.h"
 #include "include/rbd_types.h"
@@ -1819,9 +1818,9 @@ int mirror_uuid_set(librados::IoCtx *ioctx, const std::string &uuid) {
   bufferlist in_bl;
   encode(uuid, in_bl);
 
-  bufferlist out_bl;
-  int r = ioctx->exec(RBD_MIRRORING, "rbd", "mirror_uuid_set", in_bl,
-                      out_bl);
+  librados::ObjectWriteOperation op;
+  op.exec("rbd", "mirror_uuid_set", in_bl);
+  int r = ioctx->operate(RBD_MIRRORING, &op);
   if (r < 0) {
     return r;
   }
@@ -1907,9 +1906,9 @@ int mirror_remote_namespace_set(librados::IoCtx *ioctx,
   bufferlist in_bl;
   encode(mirror_namespace, in_bl);
 
-  bufferlist out_bl;
-  int r = ioctx->exec(RBD_MIRRORING, "rbd", "mirror_remote_namespace_set",
-                      in_bl, out_bl);
+  librados::ObjectWriteOperation op;
+  op.exec("rbd", "mirror_remote_namespace_set", in_bl);
+  int r = ioctx->operate(RBD_MIRRORING, &op);
   if (r < 0) {
     return r;
   }

@@ -232,6 +232,65 @@ struct omap_manager_test_t :
     }
   }
 
+  ObjectStore::omap_iter_ret_t  check_iterate(std::string_view key,
+                                              std::string_view val,
+                                              ObjectStore::omap_iter_seek_t &start_from)
+  {
+    static uint32_t current_index = 0;
+    static uint32_t last_index = 0;
+    static bool check_start = true;
+
+    if (check_start && start_from.seek_position != "") {
+      if (start_from.seek_type == ObjectStore::omap_iter_seek_t::LOWER_BOUND) {
+        EXPECT_TRUE(start_from.seek_position == key);
+      } else {
+        EXPECT_TRUE(start_from.seek_position < key);
+      }
+      check_start = false;
+    }
+
+    auto iter = test_omap_mappings.find(std::string(key));
+    EXPECT_TRUE(iter != test_omap_mappings.end());
+    ceph::bufferlist bl = iter->second;
+    std::string result(bl.c_str(), bl.length());
+    EXPECT_TRUE(result == val);
+    current_index = std::distance(test_omap_mappings.begin(), iter);
+    if (last_index != 0) {
+      EXPECT_EQ(last_index + 1, current_index);
+    }
+    last_index = current_index;
+
+    if (current_index > test_omap_mappings.size() - 10) {
+      current_index = 0;
+      last_index = 0;
+      check_start = true;
+      return ObjectStore::omap_iter_ret_t::STOP;
+    } else {
+      return ObjectStore::omap_iter_ret_t::NEXT;
+    }
+ }
+
+  void iterate(
+    const omap_root_t &omap_root,
+    Transaction &t,
+    ObjectStore::omap_iter_seek_t &start_from,
+    OMapManager::omap_iterate_cb_t callback) {
+
+    if (start_from.seek_type == ObjectStore::omap_iter_seek_t::LOWER_BOUND) {
+      logger().debug("iterate lower bound on {}", start_from.seek_position);
+    } else {
+      logger().debug("iterate upper bound on {}", start_from.seek_position);
+    }
+
+    auto ret = with_trans_intr(
+      t,
+      [&, this](auto &t) {
+        return omap_manager->omap_iterate(omap_root, t, start_from, callback);
+      }).unsafe_get();
+
+    EXPECT_EQ(ret, ObjectStore::omap_iter_ret_t::STOP);
+  }
+
   void clear(
     omap_root_t &omap_root,
     Transaction &t) {
@@ -273,7 +332,8 @@ struct omap_manager_test_t :
     omap_root_t omap_root = with_trans_intr(
       *t,
       [this](auto &t) {
-	return omap_manager->initialize_omap(t, L_ADDR_MIN);
+	return omap_manager->initialize_omap(t, L_ADDR_MIN,
+	  omap_type_t::OMAP);
       }).unsafe_get();
     submit_transaction(std::move(t));
     return omap_root;
@@ -312,114 +372,50 @@ TEST_P(omap_manager_test_t, basic)
   });
 }
 
-TEST_P(omap_manager_test_t, force_leafnode_split)
+TEST_P(omap_manager_test_t, leafnode_split_merge_balancing)
 {
   run_async([this] {
     omap_root_t omap_root = initialize();
 
-    for (unsigned i = 0; i < 40; i++) {
+    // Insert enough keys to grow tree depth to 2, ensuring the first
+    // internal node is created via leaf node split.
+    logger().debug("== first split");
+    while (omap_root.get_depth() < 2) {
       auto t = create_mutate_transaction();
-      logger().debug("opened transaction");
-      for (unsigned j = 0; j < 10; ++j) {
+      for (int i = 0; i < 64; i++) {
         set_random_key(omap_root, *t);
-        if ((i % 20 == 0) && (j == 5)) {
-          check_mappings(omap_root, *t);
-        }
       }
-      logger().debug("force split submit transaction i = {}", i);
+      check_mappings(omap_root, *t);
       submit_transaction(std::move(t));
       check_mappings(omap_root);
     }
-  });
-}
 
-TEST_P(omap_manager_test_t, force_leafnode_split_merge)
-{
-  run_async([this] {
-    omap_root_t omap_root = initialize();
-
-    for (unsigned i = 0; i < 80; i++) {
-      auto t = create_mutate_transaction();
-      logger().debug("opened split_merge transaction");
-      for (unsigned j = 0; j < 5; ++j) {
-        set_random_key(omap_root, *t);
-        if ((i % 10 == 0) && (j == 3)) {
-          check_mappings(omap_root, *t);
-        }
-      }
-      logger().debug("submitting transaction");
-      submit_transaction(std::move(t));
-      if (i % 50 == 0) {
-        check_mappings(omap_root);
-      }
-    }
-    auto mkeys = get_mapped_keys();
+    // Insert the same total number of keys again to force additional
+    // leaf node splits under the same internal node.
+    logger().debug("== second split");
+    auto keys_for_leaf_split = test_omap_mappings.size();
     auto t = create_mutate_transaction();
-    for (unsigned i = 0; i < mkeys.size(); i++) {
-      if (i % 3 != 0) {
-        rm_key(omap_root, *t, mkeys[i]);
-      }
-
-      if (i % 10 == 0) {
-        logger().debug("submitting transaction i= {}", i);
-        submit_transaction(std::move(t));
-        t = create_mutate_transaction();
-      }
-      if (i % 100 == 0) {
-        logger().debug("check_mappings  i= {}", i);
-        check_mappings(omap_root, *t);
-        check_mappings(omap_root);
-      }
+    for (unsigned i = 0; i < keys_for_leaf_split; ++i) {
+      set_random_key(omap_root, *t);
     }
-    logger().debug("finally submitting transaction ");
-    submit_transaction(std::move(t));
-  });
-}
-
-TEST_P(omap_manager_test_t, force_leafnode_split_merge_fullandbalanced)
-{
-  run_async([this] {
-    omap_root_t omap_root = initialize();
-
-    for (unsigned i = 0; i < 50; i++) {
-      auto t = create_mutate_transaction();
-      logger().debug("opened split_merge transaction");
-      for (unsigned j = 0; j < 5; ++j) {
-        set_random_key(omap_root, *t);
-        if ((i % 10 == 0) && (j == 3)) {
-          check_mappings(omap_root, *t);
-        }
-      }
-      logger().debug("submitting transaction");
-      submit_transaction(std::move(t));
-      if (i % 50 == 0) {
-        check_mappings(omap_root);
-      }
-    }
-    auto mkeys = get_mapped_keys();
-    auto t = create_mutate_transaction();
-    for (unsigned i = 0; i < mkeys.size(); i++) {
-      if (30 < i && i < 100) {
-        rm_key(omap_root, *t, mkeys[i]);
-      }
-
-      if (i % 10 == 0) {
-        logger().debug("submitting transaction i= {}", i);
-        submit_transaction(std::move(t));
-        t = create_mutate_transaction();
-      }
-      if (i % 50 == 0) {
-        logger().debug("check_mappings  i= {}", i);
-        check_mappings(omap_root, *t);
-        check_mappings(omap_root);
-      }
-      if (i == 100) {
-        break;
-      }
-    }
-    logger().debug("finally submitting transaction ");
+    check_mappings(omap_root, *t);
     submit_transaction(std::move(t));
     check_mappings(omap_root);
+
+    // Remove keys to trigger leaf node merges and balancing,
+    // eventually contracting the tree back to depth 1.
+    logger().debug("== merges and balancing");
+    while (omap_root.get_depth() > 1) {
+      auto t = create_mutate_transaction();
+      for (int i = 0; i < 64; i++) {
+        rm_key(omap_root, *t,
+               std::next(test_omap_mappings.begin(),
+		         test_omap_mappings.size()/2)->first);
+      }
+      check_mappings(omap_root, *t);
+      submit_transaction(std::move(t));
+      check_mappings(omap_root);
+    }
   });
 }
 
@@ -583,7 +579,6 @@ TEST_P(omap_manager_test_t, force_inner_node_split_list_rmkey_range)
   });
 }
 
-
 TEST_P(omap_manager_test_t, internal_force_split)
 {
   run_async([this] {
@@ -651,43 +646,45 @@ TEST_P(omap_manager_test_t, replay)
   run_async([this] {
     omap_root_t omap_root = initialize();
 
-    for (unsigned i = 0; i < 8; i++) {
-      logger().debug("opened split transaction");
+    // Repeatedly apply set/rm operations until the omap tree reaches
+    // depth 2. This simulates real-world scenarios where data is
+    // inserted and deleted over time, and ensures that replay after
+    // structural transitions does not corrupt tree state.
+    //
+    // Each iteration inserts 256 keys and removes 128, driving split
+    // pressure with a controlled amount of churn.
+    while (omap_root.get_depth() < 2) {
       auto t = create_mutate_transaction();
+      logger().debug("== begin split-churn cycle (num_keys = {})",
+	             test_omap_mappings.size());
 
-      for (unsigned j = 0; j < 80; ++j) {
+      for (int i = 0; i < 128; i++) {
         set_random_key(omap_root, *t);
-        if ((i % 2 == 0) && (j % 50 == 0)) {
-          check_mappings(omap_root, *t);
-        }
+        set_random_key(omap_root, *t);
+        rm_key(omap_root, *t, test_omap_mappings.begin()->first);
       }
-      logger().debug("submitting transaction i = {}", i);
       submit_transaction(std::move(t));
-    }
-    replay();
-    check_mappings(omap_root);
 
-    auto mkeys = get_mapped_keys();
-    auto t = create_mutate_transaction();
-    for (unsigned i = 0; i < mkeys.size(); i++) {
-      rm_key(omap_root, *t, mkeys[i]);
-
-      if (i % 10 == 0) {
-        logger().debug("submitting transaction i= {}", i);
-        submit_transaction(std::move(t));
-        replay();
-        t = create_mutate_transaction();
-      }
-      if (i % 50 == 0) {
-        logger().debug("check_mappings  i= {}", i);
-        check_mappings(omap_root, *t);
-        check_mappings(omap_root);
-      }
+      replay();
+      check_mappings(omap_root);
     }
-    logger().debug("finally submitting transaction ");
-    submit_transaction(std::move(t));
-    replay();
-    check_mappings(omap_root);
+
+    // Gradually remove 128 keys at a time — matching the number
+    // inserted per iteration earlier. This triggers a merge that
+    // shrinks the tree back to depth 1, allowing us to verify that
+    // replay remains correct after structural contraction.
+    while (omap_root.get_depth() > 1) {
+      auto t = create_mutate_transaction();
+      logger().debug("== begin full deletion to trigger merge");
+
+      auto first = test_omap_mappings.begin()->first;
+      auto last = std::next(test_omap_mappings.begin(), 128)->first;
+      rm_key_range(omap_root, *t, first, last);
+      submit_transaction(std::move(t));
+
+      replay();
+      check_mappings(omap_root);
+    }
   });
 }
 
@@ -717,6 +714,105 @@ TEST_P(omap_manager_test_t, internal_force_split_to_root)
       submit_transaction(std::move(t));
      }
     check_mappings(omap_root);
+  });
+}
+
+TEST_P(omap_manager_test_t, omap_iterate)
+{
+  run_async([this] {
+    omap_root_t omap_root = initialize();
+
+    std::string lower_key;
+    std::string upper_key;
+    ObjectStore::omap_iter_seek_t start_from;
+
+    auto insert_batches = [&](unsigned num_batches) {
+      for (unsigned i = 0; i < num_batches; ++i) {
+        auto t = create_mutate_transaction();
+        logger().debug("opened transaction");
+        for (unsigned j = 0; j < 64; ++j) {
+	  // Use large value size to accelerate tree growth.
+          auto key = rand_name(STR_LEN);
+          set_key(omap_root, *t, key, rand_buffer(512));
+          if (i == 3) {
+            lower_key = key;
+          }
+	  if (i == 5) {
+	    upper_key = key;
+	  }
+	}
+        submit_transaction(std::move(t));
+      }
+    };
+
+    while (omap_root.get_depth() < 3) {
+      insert_batches(10);
+    }
+    // Insert the same number of random key-value pairs again
+    // to ensure that depth 2 contains more than two inner nodes.
+    // This is necessary to evaluate iteration that spans across
+    // multiple inner nodes.
+    auto target_size = test_omap_mappings.size() * 2;
+    while (test_omap_mappings.size() < target_size) {
+      insert_batches(10);
+    }
+
+    std::function<ObjectStore::omap_iter_ret_t(std::string_view, std::string_view)> callback =
+      [this, &start_from](std::string_view key, std::string_view val) {
+        return this->check_iterate(key, val, start_from);
+    };
+    {
+      start_from.seek_position = lower_key;
+      start_from.seek_type = ObjectStore::omap_iter_seek_t::LOWER_BOUND;
+      auto t = create_read_transaction();
+      iterate(omap_root, *t, start_from, callback);
+    }
+
+    {
+      start_from.seek_position = upper_key;
+      start_from.seek_type = ObjectStore::omap_iter_seek_t::UPPER_BOUND;
+      auto t = create_read_transaction();
+      iterate(omap_root, *t, start_from, callback);
+    }
+
+    {
+      start_from = ObjectStore::omap_iter_seek_t::min_lower_bound();
+      auto t = create_read_transaction();
+      iterate(omap_root, *t, start_from, callback);
+    }
+    {
+      auto t = create_mutate_transaction();
+      clear(omap_root, *t);
+      submit_transaction(std::move(t));
+    }
+  });
+}
+
+TEST_P(omap_manager_test_t, full_range_list)
+{
+  run_async([this] {
+    omap_root_t omap_root = initialize();
+    std::optional<std::string> first = std::nullopt;
+    std::optional<std::string> last = std::nullopt;
+
+    auto full_range_list_and_log = [&](unsigned target_depth, std::string_view label) {
+      do {
+        auto t = create_mutate_transaction();
+        for (unsigned i = 0; i < 100; ++i) {
+          set_random_key(omap_root, *t);
+        }
+        submit_transaction(std::move(t));
+      } while (omap_root.depth < target_depth);
+
+      auto t = create_read_transaction();
+      logger().debug("[depth={}] {}", target_depth, label);
+      list(omap_root, *t, first, last, test_omap_mappings.size());
+    };
+
+    full_range_list_and_log(1, "full range list single leaf node");
+    full_range_list_and_log(2, "full range list single inner node with multiple leaf nodes");
+    // Skipped: covered by omap_manager_test_t.force_inner_node_split_list_rmkey_range.
+    // full_range_list_and_log(3, "full range list multiple inner and leaf nodes");
   });
 }
 

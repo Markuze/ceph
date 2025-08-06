@@ -514,7 +514,7 @@ public:
   virtual RGWAccessControlPolicy& get_acl(void) override { return acls; }
   virtual int set_acl(const DoutPrefixProvider* dpp, RGWAccessControlPolicy& acl,
 		      optional_yield y) override;
-  virtual int read_stats(const DoutPrefixProvider *dpp,
+  virtual int read_stats(const DoutPrefixProvider *dpp, optional_yield y,
 			 const bucket_index_layout_generation& idx_layout,
 			 int shard_id, std::string* bucket_ver, std::string* master_ver,
 			 std::map<RGWObjCategory, RGWStorageStats>& stats,
@@ -538,9 +538,11 @@ public:
 			 RGWUsageIter& usage_iter, std::map<rgw_user_bucket, rgw_usage_log_entry>& usage) override;
   virtual int trim_usage(const DoutPrefixProvider *dpp, uint64_t start_epoch, uint64_t end_epoch, optional_yield y) override;
   virtual int remove_objs_from_index(const DoutPrefixProvider *dpp, std::list<rgw_obj_index_key>& objs_to_unlink) override;
-  virtual int check_index(const DoutPrefixProvider *dpp, std::map<RGWObjCategory, RGWStorageStats>& existing_stats, std::map<RGWObjCategory, RGWStorageStats>& calculated_stats) override;
-  virtual int rebuild_index(const DoutPrefixProvider *dpp) override;
-  virtual int set_tag_timeout(const DoutPrefixProvider *dpp, uint64_t timeout) override;
+  virtual int check_index(const DoutPrefixProvider *dpp, optional_yield y,
+                          std::map<RGWObjCategory, RGWStorageStats>& existing_stats,
+                          std::map<RGWObjCategory, RGWStorageStats>& calculated_stats) override;
+  virtual int rebuild_index(const DoutPrefixProvider *dpp, optional_yield y) override;
+  virtual int set_tag_timeout(const DoutPrefixProvider *dpp, optional_yield y, uint64_t timeout) override;
   virtual int purge_instance(const DoutPrefixProvider* dpp, optional_yield y) override;
 
   virtual std::unique_ptr<Bucket> clone() override {
@@ -659,16 +661,19 @@ public:
   /** If multipart, enumerate (a range [marker..marker+[min(max_parts, parts_count-1)] of) parts of the object */
   virtual int list_parts(const DoutPrefixProvider* dpp, CephContext* cct,
 			 int max_parts, int marker, int* next_marker,
-			 bool* truncated, list_parts_each_t each_func,
+			 bool* truncated, list_parts_each_t&& each_func,
 			 optional_yield y) override;
 
+  bool is_sync_completed(const DoutPrefixProvider* dpp, optional_yield y,
+                         const ceph::real_time& obj_mtime) override;
   virtual int load_obj_state(const DoutPrefixProvider* dpp, optional_yield y, bool follow_olh = true) override;
   virtual int set_obj_attrs(const DoutPrefixProvider* dpp, Attrs* setattrs,
 			    Attrs* delattrs, optional_yield y, uint32_t flags) override;
   virtual int get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp,
 			    rgw_obj* target_obj = NULL) override;
   virtual int modify_obj_attrs(const char* attr_name, bufferlist& attr_val,
-			       optional_yield y, const DoutPrefixProvider* dpp) override;
+			       optional_yield y, const DoutPrefixProvider* dpp,
+			       uint32_t flags = rgw::sal::FLAG_LOG_OP) override;
   virtual int delete_obj_attrs(const DoutPrefixProvider* dpp, const char* attr_name,
 			       optional_yield y) override;
   virtual bool is_expired() override;
@@ -692,16 +697,11 @@ public:
 			 optional_yield y) override;
   virtual int restore_obj_from_cloud(Bucket* bucket,
 			   rgw::sal::PlacementTier* tier,
-			   rgw_placement_rule& placement_rule,
-			   rgw_bucket_dir_entry& o,
 			   CephContext* cct,
-		           RGWObjTier& tier_config,
-			   real_time& mtime,
-			   uint64_t olh_epoch,
 			   std::optional<uint64_t> days,
+		           bool& in_progress,
 			   const DoutPrefixProvider* dpp,
-			   optional_yield y,
-		           uint32_t flags) override;
+			   optional_yield y) override;
   virtual bool placement_rules_match(rgw_placement_rule& r1, rgw_placement_rule& r2) override;
   virtual int dump_obj_layout(const DoutPrefixProvider *dpp, optional_yield y, Formatter* f) override;
   virtual int swift_versioning_restore(const ACLOwner& owner, const rgw_user& remote_user, bool& restored,
@@ -1017,7 +1017,7 @@ public:
   MPPOSIXSerializer(const DoutPrefixProvider *dpp, POSIXDriver* driver, POSIXObject* _obj, const std::string& lock_name) : obj(_obj) {}
 
   virtual int try_lock(const DoutPrefixProvider *dpp, utime_t dur, optional_yield y) override;
-  virtual int unlock() override { return 0; }
+  virtual int unlock(const DoutPrefixProvider* dpp, optional_yield y) override { return 0; }
 };
 
 } } // namespace rgw::sal

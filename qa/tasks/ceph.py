@@ -666,7 +666,8 @@ def create_simple_monmap(ctx, remote, conf, mons,
 
 
 def is_crimson(config):
-    return config.get('flavor', 'default') == 'crimson'
+    return config.get('flavor', 'default') == 'crimson-debug' or \
+        config.get('flavor', 'default') == 'crimson-release'
 
 
 def maybe_redirect_stderr(config, type_, args, log_path):
@@ -1524,7 +1525,8 @@ def run_daemon(ctx, config, type_):
     try:
         yield
     finally:
-        teuthology.stop_daemons_of_type(ctx, type_, cluster_name)
+        timeout = config.get('stop-daemons-timeout', 300)
+        teuthology.stop_daemons_of_type(ctx, type_, cluster_name, timeout=timeout)
 
 
 def healthy(ctx, config):

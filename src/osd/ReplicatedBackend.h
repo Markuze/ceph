@@ -148,12 +148,20 @@ public:
 
   void objects_read_async(
     const hobject_t &hoid,
-    const std::list<std::pair<ECCommon::ec_align_t,
+    uint64_t object_size,
+    const std::list<std::pair<ec_align_t,
 	       std::pair<ceph::buffer::list*, Context*> > > &to_read,
                Context *on_complete,
                bool fast_read = false) override;
+  bool get_ec_supports_crc_encode_decode() const override;
+  ECUtil::stripe_info_t ec_get_sinfo() const override;
+  bool ec_can_decode(const shard_id_set &available_shards) const override;
+  shard_id_map<bufferlist> ec_encode_acting_set(
+      const bufferlist &in_bl) const override;
+  shard_id_map<bufferlist> ec_decode_acting_set(
+      const shard_id_map<bufferlist> &shard_map, int chunk_size) const override;
 
-private:
+ private:
   // push
   struct push_info_t {
     ObjectRecoveryProgress recovery_progress;
@@ -440,8 +448,12 @@ private:
 
     ObjectStore::Transaction opt, localt;
     
-    RepModify() : committed(false), ackerosd(-1),
-		  epoch_started(0) {}
+    RepModify(uint64_t features)
+      : committed(false),
+        ackerosd(-1),
+        epoch_started(0),
+        localt(features) {
+    }
   };
   typedef std::shared_ptr<RepModify> RepModifyRef;
 
@@ -450,14 +462,20 @@ private:
   void repop_commit(RepModifyRef rm);
   bool auto_repair_supported() const override { return store->has_builtin_csum(); }
 
+  static inline const uint32_t scrub_fadvise_flags{
+      CEPH_OSD_OP_FLAG_FADVISE_SEQUENTIAL |
+      CEPH_OSD_OP_FLAG_FADVISE_DONTNEED |
+      CEPH_OSD_OP_FLAG_BYPASS_CLEAN_CACHE};
 
   int be_deep_scrub(
+    const Scrub::ScrubCounterSet& io_counters,
     const hobject_t &poid,
     ScrubMap &map,
     ScrubMapBuilder &pos,
     ScrubMap::object &o) override;
 
-  uint64_t be_get_ondisk_size(uint64_t logical_size) const final {
+  uint64_t be_get_ondisk_size(uint64_t logical_size,
+                              shard_id_t unused) const final {
     return logical_size;
   }
 };

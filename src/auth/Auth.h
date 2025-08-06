@@ -18,6 +18,14 @@
 #include "Crypto.h"
 #include "common/ceph_json.h"
 #include "common/entity_name.h"
+#include "common/Formatter.h"
+#include "include/buffer.h"
+
+#include <cstdint>
+#include <iostream>
+#include <list>
+#include <map>
+#include <string>
 
 // The _MAX values are a bit wonky here because we are overloading the first
 // byte of the auth payload to identify both the type of authentication to be
@@ -128,7 +136,7 @@ WRITE_CLASS_ENCODER(AuthCapsInfo)
 struct AuthTicket {
   EntityName name;
   uint64_t global_id; /* global instance id */
-  utime_t created, renew_after, expires;
+  utime_t created, expires;
   AuthCapsInfo caps;
   __u32 flags;
 
@@ -138,8 +146,6 @@ struct AuthTicket {
     created = now;
     expires = now;
     expires += ttl;
-    renew_after = now;
-    renew_after += ttl / 2.0;
   }
 
   void encode(ceph::buffer::list& bl) const {
@@ -173,7 +179,6 @@ struct AuthTicket {
     f->dump_object("name", name);
     f->dump_unsigned("global_id", global_id);
     f->dump_stream("created") << created;
-    f->dump_stream("renew_after") << renew_after;
     f->dump_stream("expires") << expires;
     f->dump_object("caps", caps);
     f->dump_unsigned("flags", flags);

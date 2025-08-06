@@ -793,6 +793,21 @@ options:
   services:
   - mds
   with_legacy: true
+- name: mds_allow_batched_ops
+  type: bool
+  level: advanced
+  desc: allow MDS to batch lookup/getattr RPCs
+  long_desc: >
+    The MDS will batch a lookup or getattr RPC on the same inode when
+    possible to avoid repetitive locks on metadata and to bypass other
+    requests acquiring write locks. Generally, this should only
+    improve performance but this switch exists to provide a means to
+    turn this behavior off for comparison.
+  default: true
+  services:
+  - mds
+  flags:
+  - runtime
 # multiple of size_max that triggers immediate split
 - name: mds_bal_fragment_fast_factor
   type: float
@@ -1563,6 +1578,28 @@ options:
   max: 4_K
   flags:
   - runtime
+- name: mds_use_global_snaprealm_seq_for_subvol
+  type: bool
+  level: advanced
+  default: true
+  services:
+  - mds
+  fmt_desc: MDS will use the global snaprealm's seq to cow old inodes
+    for the directory. If the option is disabled, MDS will use the
+    respective snaprealm seq number for the subvolume snapshot directory
+    i.e., the directory marked with the 'ceph.dir.subvolume'. This is
+    safe because the hardlinks/renames are contained within the subvolume
+    snaprealm with the marking of 'ceph.dir.subvolume'. For the directories
+    above subvolume, it will use the global snaprealm's seq only if there
+    is at least one snapshot of the directory above the subvolume.
+    If the option is enabled, which is the default, it uses the global
+    snaprealm's seq to cow old inodes across the filesystem. Hence,
+    disabling this option is only suitalbe for the cephfs volumes used
+    purely for subvolume usecase where there are no snapshots in the
+    filesystem apart from the subvolume snapshots. So it's a great
+    optimization for subvolumes.
+  flags:
+  - runtime
 - name: mds_asio_thread_count
   type: uint
   level: advanced
@@ -1754,3 +1791,12 @@ options:
   services:
   - mds
   min: 4
+- name: mds_file_blockdiff_max_concurrent_object_scans
+  type: uint
+  level: advanced
+  desc: maximum number of concurrent object scans
+  long_desc: Maximum number of concurrent listsnaps operations sent to RADOS.
+  default: 16
+  services:
+  - mds
+  min: 1

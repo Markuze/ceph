@@ -2,6 +2,7 @@
 // vim: ts=8 sw=2 smarttab
 
 #include "dbstore.h"
+#include "log/Log.h"
 
 using namespace std;
 
@@ -81,6 +82,13 @@ int DB::Destroy(const DoutPrefixProvider *dpp)
 
   closeDB(dpp);
 
+  {
+    const std::lock_guard lk(mtx);
+    for (auto& bucket_object : DB::objectmap) {
+      delete bucket_object.second;
+    }
+    objectmap.clear();
+  }
 
   ldpp_dout(dpp, 20)<<"DB successfully destroyed - name:" \
     <<db_name << dendl;

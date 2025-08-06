@@ -33,7 +33,7 @@ public:
   LCDBSerializer(DBStore* store, const std::string& oid, const std::string& lock_name, const std::string& cookie) {}
 
   virtual int try_lock(const DoutPrefixProvider *dpp, utime_t dur, optional_yield y) override { return 0; }
-  virtual int unlock() override {
+  virtual int unlock(const DoutPrefixProvider* dpp, optional_yield y) override {
     return 0;
   }
 };
@@ -152,7 +152,7 @@ protected:
                  const CreateParams& params,
                  optional_yield y) override;
       virtual int load_bucket(const DoutPrefixProvider *dpp, optional_yield y) override;
-      virtual int read_stats(const DoutPrefixProvider *dpp,
+      virtual int read_stats(const DoutPrefixProvider *dpp, optional_yield y,
 			     const bucket_index_layout_generation& idx_layout,
 			     int shard_id,
           std::string *bucket_ver, std::string *master_ver,
@@ -175,9 +175,11 @@ protected:
           std::map<rgw_user_bucket, rgw_usage_log_entry>& usage) override;
       virtual int trim_usage(const DoutPrefixProvider *dpp, uint64_t start_epoch, uint64_t end_epoch, optional_yield y) override;
       virtual int remove_objs_from_index(const DoutPrefixProvider *dpp, std::list<rgw_obj_index_key>& objs_to_unlink) override;
-      virtual int check_index(const DoutPrefixProvider *dpp, std::map<RGWObjCategory, RGWStorageStats>& existing_stats, std::map<RGWObjCategory, RGWStorageStats>& calculated_stats) override;
-      virtual int rebuild_index(const DoutPrefixProvider *dpp) override;
-      virtual int set_tag_timeout(const DoutPrefixProvider *dpp, uint64_t timeout) override;
+      virtual int check_index(const DoutPrefixProvider *dpp, optional_yield y,
+                              std::map<RGWObjCategory, RGWStorageStats>& existing_stats,
+                              std::map<RGWObjCategory, RGWStorageStats>& calculated_stats) override;
+      virtual int rebuild_index(const DoutPrefixProvider *dpp, optional_yield y) override;
+      virtual int set_tag_timeout(const DoutPrefixProvider *dpp, optional_yield y, uint64_t timeout) override;
       virtual int purge_instance(const DoutPrefixProvider *dpp, optional_yield y) override;
       virtual std::unique_ptr<Bucket> clone() override {
         return std::make_unique<DBBucket>(*this);
@@ -207,7 +209,10 @@ protected:
     virtual ~DBPlacementTier() = default;
 
     virtual const std::string& get_tier_type() { return tier.tier_type; }
+    virtual bool is_tier_type_s3() { return (tier.is_tier_type_s3()); }
     virtual const std::string& get_storage_class() { return tier.storage_class; }
+    virtual bool allow_read_through() { return tier.allow_read_through; }
+    virtual uint64_t get_read_through_restore_days() { return tier.read_through_restore_days; }
     virtual bool retain_head_object() { return tier.retain_head_object; }
     RGWZoneGroupPlacementTier& get_rt() { return tier; }
   };
@@ -558,12 +563,15 @@ protected:
       /** If multipart, enumerate (a range [marker..marker+[min(max_parts, parts_count-1)] of) parts of the object */
       virtual int list_parts(const DoutPrefixProvider* dpp, CephContext* cct,
 			   int max_parts, int marker, int* next_marker,
-			   bool* truncated, list_parts_each_t each_func,
+			   bool* truncated, list_parts_each_t&& each_func,
 			   optional_yield y) override;
 
+      bool is_sync_completed(const DoutPrefixProvider* dpp, optional_yield y,
+                             const ceph::real_time& obj_mtime) override;
       virtual int load_obj_state(const DoutPrefixProvider* dpp, optional_yield y, bool follow_olh = true) override;
       virtual int get_obj_attrs(optional_yield y, const DoutPrefixProvider* dpp, rgw_obj* target_obj = NULL) override;
-      virtual int modify_obj_attrs(const char* attr_name, bufferlist& attr_val, optional_yield y, const DoutPrefixProvider* dpp) override;
+      virtual int modify_obj_attrs(const char* attr_name, bufferlist& attr_val, optional_yield y, const DoutPrefixProvider* dpp,
+	                           uint32_t flags = rgw::sal::FLAG_LOG_OP) override;
       virtual int delete_obj_attrs(const DoutPrefixProvider* dpp, const char* attr_name, optional_yield y) override;
       virtual bool is_expired() override;
       virtual void gen_rand_obj_instance_name() override;
@@ -611,7 +619,7 @@ protected:
     MPDBSerializer(const DoutPrefixProvider *dpp, DBStore* store, DBObject* obj, const std::string& lock_name) {}
 
     virtual int try_lock(const DoutPrefixProvider *dpp, utime_t dur, optional_yield y) override {return 0; }
-    virtual int unlock() override { return 0;}
+    virtual int unlock(const DoutPrefixProvider* dpp, optional_yield y) override { return 0;}
   };
 
   class DBAtomicWriter : public StoreWriter {
@@ -885,6 +893,7 @@ public:
       virtual int list_all_zones(const DoutPrefixProvider* dpp, std::list<std::string>& zone_ids) override;
       virtual int cluster_stat(RGWClusterStat& stats) override;
       virtual std::unique_ptr<Lifecycle> get_lifecycle(void) override;
+      virtual std::unique_ptr<Restore> get_restore(void) override;
       virtual bool process_expired_objects(const DoutPrefixProvider *dpp, optional_yield y) override;
 
   virtual std::unique_ptr<Notification> get_notification(
@@ -917,6 +926,7 @@ public:
                                   const std::string& topic_queue) override;
 
       virtual RGWLC* get_rgwlc(void) override;
+      virtual rgw::restore::Restore* get_rgwrestore(void) override { return NULL; }
       virtual RGWCoroutinesManagerRegistry* get_cr_registry() override { return NULL; }
       virtual int log_usage(const DoutPrefixProvider *dpp, std::map<rgw_user_bucket, RGWUsageBatch>& usage_info, optional_yield y) override;
       virtual int log_op(const DoutPrefixProvider *dpp, std::string& oid, bufferlist& bl) override;
