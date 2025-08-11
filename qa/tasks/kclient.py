@@ -248,7 +248,7 @@ def task(ctx, config):
             cephfs_name=cephfs_name)
 
         mounts[id_] = kernel_mount
-        # Store debug flag for use during unmount
+        # Record whether debug was requested for this client
         kernel_mount._debug_enabled = client_config.get('debug', False)
 
         if client_config.get('debug', False):
@@ -260,9 +260,9 @@ def task(ctx, config):
     def umount_all():
         log.info('Unmounting kernel clients...')
 
-        # Collect kernel debug artifacts before unmounting if debug is enabled
+        # Collect kernel debug artifacts before unmounting
         for id_, mount in mounts.items():
-            if getattr(mount, '_debug_enabled', False) and mount.is_mounted():
+            if mount.is_mounted():
                 log.info(f"Collecting kernel debug artifacts for client.{id_}")
                 collected_files = collect_kernel_debug_artifacts(mount.client_remote, id_, test_dir)
                 if collected_files:
